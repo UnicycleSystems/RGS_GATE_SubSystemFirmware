@@ -1,0 +1,1 @@
+hexmate r0-47FF,..\..\..\Bootloader_V2.X\dist\default\production\Bootloader_V2.X.production.hex r4800-14FFF,..\..\dist\default\production\V2_testAPP.production.hex r15000-FFFFFFFF,..\..\..\Bootloader_V2.X\dist\default\production\Bootloader_V2.X.production.hex -O..\..\dist\default\production\combined.production.hex
