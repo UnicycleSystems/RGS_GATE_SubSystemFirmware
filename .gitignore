@@ -1,0 +1,27 @@
+# MPLAB X generated build outputs
+build/
+dist/
+debug/
+release/
+
+# MPLAB X user-specific settings
+nbproject/private/
+
+# Generated dependency and object files
+*.o
+*.d
+*.a
+*.elf
+*.hex
+*.map
+*.lst
+*.cod
+*.cof
+
+# Temporary and backup files
+*.tmp
+*.temp
+*.bak
+*~
+Thumbs.db
+.DS_Store
