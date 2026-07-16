@@ -136,29 +136,29 @@ void RestoreDetect(void);
 
 #define PWM_IR_SetDigitalOutput() (_TRISB11 = 0)
 
-#define PWM_BLUE_SetHigh()          (_LATB12 = 1)
+#define BI_LED_GREEN_SetHigh()          (_LATB12 = 1)
 
-#define PWM_BLUE_SetLow()           (_LATB12 = 0)
+#define BI_LED_GREEN_SetLow()           (_LATB12 = 0)
 
-#define PWM_BLUE_Toggle()           (_LATB12 ^= 1)
+#define BI_LED_GREEN_Toggle()           (_LATB12 ^= 1)
 
-#define PWM_BLUE_GetValue()         _RB12
+#define BI_LED_GREEN_GetValue()         _RB12
 
-#define PWM_BLUE_SetDigitalInput()  (_TRISB12 = 1)
+#define BI_LED_GREEN_SetDigitalInput()  (_TRISB12 = 1)
 
-#define PWM_BLUE_SetDigitalOutput() (_TRISB12 = 0)
+#define BI_LED_GREEN_SetDigitalOutput() (_TRISB12 = 0)
 
-#define PWM_GREEN_SetHigh()          (_LATB13 = 1)
+#define BI_LED_RED_SetHigh()          (_LATB13 = 1)
 
-#define PWM_GREEN_SetLow()           (_LATB13 = 0)
+#define BI_LED_RED_SetLow()           (_LATB13 = 0)
 
-#define PWM_GREEN_Toggle()           (_LATB13 ^= 1)
+#define BI_LED_RED_Toggle()           (_LATB13 ^= 1)
 
-#define PWM_GREEN_GetValue()         _RB13
+#define BI_LED_RED_GetValue()         _RB13
 
-#define PWM_GREEN_SetDigitalInput()  (_TRISB13 = 1)
+#define BI_LED_RED_SetDigitalInput()  (_TRISB13 = 1)
 
-#define PWM_GREEN_SetDigitalOutput() (_TRISB13 = 0)
+#define BI_LED_RED_SetDigitalOutput() (_TRISB13 = 0)
 
 #define DEBUG_RX_SetHigh()          (_LATB14 = 1)
 

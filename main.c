@@ -221,14 +221,14 @@ int main(void)
         if(VER_0_GetValue())
         {
             charged=1;
-            PWM_BLUE_SetHigh();//Turn on Green LED
-            PWM_GREEN_SetLow();//Turn off Red LED 
+            BI_LED_GREEN_SetHigh();//Turn on Green LED
+            BI_LED_RED_SetLow();//Turn off Red LED 
         }
         else
         {
             charged=0;
-           PWM_GREEN_SetHigh();//Turn off Red LED 
-            PWM_BLUE_SetLow();//Turn on Green LED
+           BI_LED_RED_SetHigh();//Turn off Red LED 
+            BI_LED_GREEN_SetLow();//Turn on Green LED
         }
         // wait for some other eventn
         //or sleep and try again on wake..... 
@@ -238,8 +238,8 @@ int main(void)
  //
      while(!PowerButton(On))//wait for a 'power on  press and hold to complete
          ClrWdt();
-     PWM_BLUE_SetHigh();//Turn on Green LED
-     PWM_GREEN_SetLow();//Turn off Red LED
+     BI_LED_GREEN_SetHigh();//Turn on Green LED
+     BI_LED_RED_SetLow();//Turn off Red LED
 
   // #define RunPOST
 #ifdef RunPOST
@@ -286,21 +286,21 @@ int main(void)
     LIS2DW12_Init_I2C2();    // TODO: should ensure it inits, or returns an error
   //  uint8_t id = 0x00;
 
-  //PWM_GREEN_SetHigh();PWM_GREEN is RED!!!!!
-  PWM_BLUE_SetHigh(); //PWM_BLUE is green!!!!
+  //BI_LED_RED_SetHigh();BI_LED_RED is RED!!!!!
+  BI_LED_GREEN_SetHigh(); //BI_LED_GREEN is green!!!!
    for(bugout=0;bugout<10;bugout++)
             {
                 //changes this to flashing red light
-                PWM_BLUE_Toggle();  
-                PWM_GREEN_Toggle();
+                BI_LED_GREEN_Toggle();  
+                BI_LED_RED_Toggle();
                 __delay_ms(50); 
-                PWM_BLUE_Toggle();  
-                PWM_GREEN_Toggle();
+                BI_LED_GREEN_Toggle();  
+                BI_LED_RED_Toggle();
                 __delay_ms(150); 
                 ClrWdt();
                 // restore green light
-                PWM_BLUE_SetHigh();//Turn on Green LED
-                PWM_GREEN_SetLow();//Turn off Red LED
+                BI_LED_GREEN_SetHigh();//Turn on Green LED
+                BI_LED_RED_SetLow();//Turn off Red LED
             }
   
 //#define PWR_BUTT_LAUNCH_TEST
@@ -349,9 +349,9 @@ int main(void)
         {
             if(FrontSense)
             { 
-             PWM_GREEN_SetHigh();   //Red LED on        
+             BI_LED_RED_SetHigh();   //Red LED on        
            //  LOCAL_STATUS_LED_SetHigh();
-             PWM_BLUE_SetLow();//green LED off
+             BI_LED_GREEN_SetLow();//green LED off
             FrontSense=0;
             }
             
@@ -369,17 +369,17 @@ int main(void)
                 // turn off red light, turn on green light
                 RestoreDetect();
                 TMR2_Start();
-                PWM_GREEN_SetLow();   //Red LED off       
+                BI_LED_RED_SetLow();   //Red LED off       
            //  LOCAL_STATUS_LED_SetHigh();
-             PWM_BLUE_SetHigh();//green LED on    
+             BI_LED_GREEN_SetHigh();//green LED on    
             }
             LedOn=0;
         }
         
         if(GateTimeout)
         {   
-            PWM_GREEN_SetLow(); 
-            PWM_BLUE_SetHigh();//green LED off      
+            BI_LED_RED_SetLow(); 
+            BI_LED_GREEN_SetHigh();//green LED off      
 
             DebugTime=TransitTime;
             EMULATE_EEPROM_Memory[0] = 255;  // Most significant byte
@@ -392,16 +392,16 @@ int main(void)
             for(bugout=0;bugout<10;bugout++)
             {
                 //changes this to flashing red light
-                PWM_BLUE_Toggle();  
-                PWM_GREEN_Toggle();
+                BI_LED_GREEN_Toggle();  
+                BI_LED_RED_Toggle();
                 __delay_ms(50); 
-                PWM_BLUE_Toggle();  
-                PWM_GREEN_Toggle();
+                BI_LED_GREEN_Toggle();  
+                BI_LED_RED_Toggle();
                 __delay_ms(150); 
                 ClrWdt();
                 // restore green light
-                PWM_BLUE_SetHigh();//Turn on Green LED
-                PWM_GREEN_SetLow();//Turn off Red LED
+                BI_LED_GREEN_SetHigh();//Turn on Green LED
+                BI_LED_RED_SetLow();//Turn off Red LED
             }
             
             GateTimeout=0;
@@ -460,9 +460,9 @@ void CallJetsonJob(void)
     {
         __delay_ms(100);
         ClrWdt();
-        PWM_BLUE_Toggle();
+        BI_LED_GREEN_Toggle();
     };
-    PWM_BLUE_SetLow();
+    BI_LED_GREEN_SetLow();
     //we should have had the jetson acknowledge by now, so turn off
   //  JETSON_5V_ON_SetLow();
    
@@ -470,7 +470,7 @@ void CallJetsonJob(void)
     {
         __delay_ms(100);
         ClrWdt();
-        PWM_BLUE_Toggle();
+        BI_LED_GREEN_Toggle();
     };
        
        RestoreDetect();
@@ -484,7 +484,7 @@ void ShutdownProcessTemp()
 
 {
     uint8_t delay;
-     PWM_GREEN_SetLow();   
+     BI_LED_RED_SetLow();   
     for(delay=0;delay<200;delay++)
     {
          ClrWdt();
@@ -511,9 +511,9 @@ void ShutdownProcessTemp()
     {
         ClrWdt();
         __delay_ms(50);
-         PWM_BLUE_Toggle();   
+         BI_LED_GREEN_Toggle();   
     }
-       PWM_BLUE_SetLow();       
+       BI_LED_GREEN_SetLow();       
    
      JETSON_5V_ON_SetHigh();
     
@@ -711,11 +711,11 @@ uint8_t PowerButton (bool OnOff)
         // hold and the device reset-loops through the flash sequence.
         ClrWdt();
 
-       PWM_BLUE_SetHigh();//Turn on Green LED
-       PWM_GREEN_SetLow();//Turn off Red LED
+       BI_LED_GREEN_SetHigh();//Turn on Green LED
+       BI_LED_RED_SetLow();//Turn off Red LED
       __delay_ms(100);
-      PWM_GREEN_SetHigh();//Turn on Red LED
-      PWM_BLUE_SetLow();//Turn off Green LED
+      BI_LED_RED_SetHigh();//Turn on Red LED
+      BI_LED_GREEN_SetLow();//Turn off Green LED
       __delay_ms(50);
       if (ButtonPressHold>5)
       {
@@ -729,13 +729,13 @@ uint8_t PowerButton (bool OnOff)
     {
          HOLD_PWR_SetHigh();
          JETSON_5V_ON_SetHigh();
-         PWM_BLUE_SetHigh();//Turn/JETSON_5V_ON_SetHigh(); on Green LED
-         PWM_GREEN_SetLow();//Turn off Red LED 
+         BI_LED_GREEN_SetHigh();//Turn/JETSON_5V_ON_SetHigh(); on Green LED
+         BI_LED_RED_SetLow();//Turn off Red LED 
     }
     else
     {
-      PWM_GREEN_SetHigh();//Turn on Red LED
-      PWM_BLUE_SetLow();//Turn off Green LED  
+      BI_LED_RED_SetHigh();//Turn on Red LED
+      BI_LED_GREEN_SetLow();//Turn off Green LED  
     }
         
 
@@ -804,25 +804,25 @@ void PWM_RB11_SetDuty(uint8_t duty)
  {
    
     uint8_t dst[2];
-     PWM_BLUE_SetLow();//Turn off Green LED
-     PWM_GREEN_SetHigh();//Turn on Red LED
+     BI_LED_GREEN_SetLow();//Turn off Green LED
+     BI_LED_RED_SetHigh();//Turn on Red LED
      ClrWdt();
      i2c2_read_regs(0x36, 0x09, dst, 2);
       ClrWdt(); 
       
      EMULATE_EEPROM_Memory[8]=dst[1];
      EMULATE_EEPROM_Memory[9]=dst[0];
-     PWM_BLUE_SetHigh();//Turn off Green LED
-     PWM_GREEN_SetLow();//Turn on Red LED
+     BI_LED_GREEN_SetHigh();//Turn off Green LED
+     BI_LED_RED_SetLow();//Turn on Red LED
  }
 
 void GetAccel(void)
 {
-    PWM_BLUE_SetLow();//Turn off Green LED
-    PWM_GREEN_SetHigh();//Turn on Red LED
+    BI_LED_GREEN_SetLow();//Turn off Green LED
+    BI_LED_RED_SetHigh();//Turn on Red LED
     QuickAcellerometerGrabber();
-    PWM_BLUE_SetHigh();//Turn off Green LED
-    PWM_GREEN_SetLow();//Turn on Red LED
+    BI_LED_GREEN_SetHigh();//Turn off Green LED
+    BI_LED_RED_SetLow();//Turn on Red LED
 }
 
 #endif
@@ -830,15 +830,15 @@ void GetAccel(void)
 #ifdef Test1
 void Test1PatternA(void)
 {
-  PWM_GREEN_SetHigh();//Turn on Red LED
-  PWM_BLUE_SetLow();//Turn off Green LED
+  BI_LED_RED_SetHigh();//Turn on Red LED
+  BI_LED_GREEN_SetLow();//Turn off Green LED
   FRONT_LASER_PWM_SetHigh();
   REAR_LASER_PWM_SetHigh();
 }
 void Test1PatternB(void)
 {
-  PWM_GREEN_SetLow();//Turn off Red LED
-  PWM_BLUE_SetLow();//Turn off Green LED
+  BI_LED_RED_SetLow();//Turn off Red LED
+  BI_LED_GREEN_SetLow();//Turn off Green LED
   FRONT_LASER_PWM_SetLow();
   REAR_LASER_PWM_SetLow(); 
 }
@@ -849,8 +849,8 @@ void Test1PatternB(void)
 #ifdef Test2
 void Test2PatternA(void)
 {
-  PWM_GREEN_SetLow();//Turn on Red LED
-  PWM_BLUE_SetHigh();//Turn off Green LED
+  BI_LED_RED_SetLow();//Turn on Red LED
+  BI_LED_GREEN_SetHigh();//Turn off Green LED
   FRONT_LASER_PWM_SetHigh();
   REAR_LASER_PWM_SetLow(); 
    BEAM_Toggle(); 
@@ -858,8 +858,8 @@ void Test2PatternA(void)
 }
 void Test2PatternB(void)
 {
-  PWM_GREEN_SetLow();//Turn on Red LED
-  PWM_BLUE_SetLow();//Turn off Green LED
+  BI_LED_RED_SetLow();//Turn on Red LED
+  BI_LED_GREEN_SetLow();//Turn off Green LED
   FRONT_LASER_PWM_SetLow();
   REAR_LASER_PWM_SetHigh(); 
   BEAM_Toggle();  
