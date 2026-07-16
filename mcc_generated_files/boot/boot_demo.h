@@ -34,7 +34,30 @@
 #ifndef BOOT_DEMO_H
 #define BOOT_DEMO_H
 
+#include <stdint.h>
+
 void BOOT_DEMO_Initialize(void);
 void BOOT_DEMO_Tasks(void);
+
+/* ---- Clean-handoff support ------------------------------------------------
+ * Instead of calling the application directly from a warm, half-configured
+ * bootloader (live UART, possibly-pending interrupt flags, running timers),
+ * the bootloader records its "launch the app" decision in a persistent RAM
+ * word and executes a software RESET. main() checks the word within
+ * microseconds of the next reset -- before ANY peripheral is touched -- and
+ * jumps to the application, which therefore starts from genuine post-reset
+ * silicon. This is the proper answer to the MCC-generated warning "Return
+ * device to reset state before starting the application".
+ *
+ * __attribute__((persistent)) places the variable in .pbss, which the XC16
+ * C runtime deliberately does NOT initialise, so the value survives the
+ * software reset. It does NOT survive a power cycle (contents random at
+ * power-on), which is why the consumer in main() also gates on RCONbits.SWR
+ * (only ever set by a software reset) and why every non-handoff boot
+ * explicitly zeroes the word.
+ */
+#define BOOT_HANDOFF_MAGIC 0xB007CAFEUL
+
+extern volatile uint32_t __attribute__((persistent)) boot_handoff_magic;
 
 #endif

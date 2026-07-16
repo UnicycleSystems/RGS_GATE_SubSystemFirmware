@@ -47,13 +47,55 @@
 */
 #include "mcc_generated_files/system.h"
 #include "mcc_generated_files/boot/boot_demo.h"
+#include "mcc_generated_files/boot/boot_process.h"
 #include "mcc_generated_files/pin_manager.h"
+#include <xc.h>
 #include <stdbool.h>
 /*
                          Main application
  */
 int main(void)
 {
+    /* ---- CLEAN-HANDOFF FAST PATH (must stay FIRST in main) ----------------
+     * If the previous boot cycle decided to launch the application, it left
+     * BOOT_HANDOFF_MAGIC in persistent RAM and took a software reset. Every
+     * peripheral is now at its datasheet reset state; jump to the app NOW,
+     * before this bootloader warms anything up.
+     *
+     * Guards, in order:
+     *  - RCONbits.SWR: the magic is only meaningful after a software reset.
+     *    At cold power-on, persistent RAM is random garbage but SWR is 0, so
+     *    garbage can never cause a false launch. (SWR is sticky within a
+     *    power cycle; the magic itself -- consumed here, zeroed below -- is
+     *    what prevents replay on later resets.)
+     *  - magic match: 32-bit value, so even an SWR-gated accident is a
+     *    ~1-in-4-billion event.
+     *
+     * The only pins touched before the jump are the power rails (µs of
+     * work): HOLD_PWR stays latched so the supply survives the app's own
+     * startup; the Jetson rail keeps whatever JETSON_CALLING implies, same
+     * policy as a normal boot. The app re-owns all pins moments later.
+     *
+     * NOTE for reviewers: after a handoff, the app sees RCONbits.SWR = 1
+     * (true -- a software reset really did occur). Anything in the app that
+     * inspects RCON for reset-cause diagnostics should expect SWR rather
+     * than a POR/BOR signature when launched via the bootloader.
+     */
+    if (RCONbits.SWR && boot_handoff_magic == BOOT_HANDOFF_MAGIC)
+    {
+        boot_handoff_magic = 0;          /* consume: never replay */
+        HOLD_PWR_SetDigitalOutput();
+        HOLD_PWR_SetHigh();
+        JETSON_5V_ON_SetDigitalOutput();
+        if (JETSON_CALLING_GetValue())
+            JETSON_5V_ON_SetHigh();
+        else
+            JETSON_5V_ON_SetLow();
+        BOOT_StartApplication();         /* never returns */
+    }
+    /* Not a handoff boot: make sure no stale/garbage value lingers. */
+    boot_handoff_magic = 0;
+
     // Take the power pins as early as possible after reset.
     // HOLD_PWR: always latch our own supply on.
     // JETSON_5V_ON: ONLY keep the Jetson powered if it is the one calling

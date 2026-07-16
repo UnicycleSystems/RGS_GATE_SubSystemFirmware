@@ -41,6 +41,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "boot_demo.h"
 #include "boot_config.h"
 #include "boot_application_header.h"
 #include "boot_image.h"
@@ -53,6 +54,12 @@
 static bool inBootloadMode = false;
 static bool executionImageRequiresValidation = true;
 static bool executionImageValid = false;
+
+/* Clean-handoff flag (see boot_demo.h). Written here just before the
+ * handoff reset; consumed (or zeroed) by main() at the top of every boot.
+ * 'persistent' => lives in .pbss, untouched by the C runtime's data init,
+ * so it survives asm("reset"). */
+volatile uint32_t __attribute__((persistent)) boot_handoff_magic;
 
 static bool EnterBootloadMode(void);
 
@@ -84,28 +91,29 @@ void BOOT_DEMO_Tasks(void)
 
             if(inBootloadMode == false)
             {
-                /* NOTE: Return all interrupt bits to their reset state before
-                 * starting an application image. DO NOT disable the global
-                 * interrupt bit. All interrupt bits must be returned to their
-                 * reset state.  The global interrupt enable bit resets to
-                 * enabled, so should be returned to enabled before starting an
-                 * application.  Most peripheral interrupt bits are disabled on
-                 * reset.  All of these should be disabled before starting the
-                 * application.  Keep in mind that some software stacks may
-                 * pull in and enable additional peripherals (e.g. - timers).
+                /* CLEAN HANDOFF: do NOT call the application from here.
+                 * At this point the bootloader is "warm": UART1 is live
+                 * (possibly with pending RX/error flags), timers have been
+                 * counting, and pin state is mid-session. Calling the app
+                 * directly hands it all of that, which is exactly what the
+                 * old MCC #warning ("return device to reset state before
+                 * starting the application") complained about.
+                 *
+                 * Instead: record the launch decision in persistent RAM and
+                 * take a REAL reset. The reset returns every peripheral to
+                 * its datasheet reset state; main() spots the magic within
+                 * microseconds of restart -- before initialising anything --
+                 * and jumps to the app from clean silicon.
+                 *
+                 * (A bare asm("reset") here WITHOUT the flag just restarts
+                 * the bootloader forever -- the reset vector is ours, not
+                 * the app's. That was the failed earlier experiment.)
                  */
-
-                /* NOTE: Disable all peripherals before starting the application.
-                 * Any peripheral left running could cause interrupt flags or bits
-                 * to be set before the application software is initialized and
-                 * can lead to unexpected system issues.
-                 */
-
-                #warning "Return device to reset state before starting the application.  Click on this warning for additional information to consider."
                 GREEN_LED_SetHigh();
                 RED_LED_SetLow();
-                //asm("reset");
-                BOOT_StartApplication();
+                boot_handoff_magic = BOOT_HANDOFF_MAGIC;
+                asm("reset");
+                /* not reached */
             }
         }
 
