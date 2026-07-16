@@ -78,29 +78,29 @@
 
 
 
-#define GREEN_LED_SetHigh()          (_LATB12 = 1)
+#define BI_LED_GREEN_SetHigh()          (_LATB12 = 1)
 
-#define GREEN_LED_SetLow()           (_LATB12 = 0)
+#define BI_LED_GREEN_SetLow()           (_LATB12 = 0)
 
-#define GREEN_LED_Toggle()           (_LATB12 ^= 1)
+#define BI_LED_GREEN_Toggle()           (_LATB12 ^= 1)
 
-#define GREEN_LED_GetValue()         _RB12
+#define BI_LED_GREEN_GetValue()         _RB12
 
-#define GREEN_LED_SetDigitalInput()  (_TRISB12 = 1)
+#define BI_LED_GREEN_SetDigitalInput()  (_TRISB12 = 1)
 
-#define GREEN_LED_SetDigitalOutput() (_TRISB12 = 0)
+#define BI_LED_GREEN_SetDigitalOutput() (_TRISB12 = 0)
 
-#define RED_LED_SetHigh()          (_LATB13 = 1)
+#define BI_LED_RED_SetHigh()          (_LATB13 = 1)
 
-#define RED_LED_SetLow()           (_LATB13 = 0)
+#define BI_LED_RED_SetLow()           (_LATB13 = 0)
 
-#define RED_LED_Toggle()           (_LATB13 ^= 1)
+#define BI_LED_RED_Toggle()           (_LATB13 ^= 1)
 
-#define RED_LED_GetValue()         _RB13
+#define BI_LED_RED_GetValue()         _RB13
 
-#define RED_LED_SetDigitalInput()  (_TRISB13 = 1)
+#define BI_LED_RED_SetDigitalInput()  (_TRISB13 = 1)
 
-#define RED_LED_SetDigitalOutput() (_TRISB13 = 0)
+#define BI_LED_RED_SetDigitalOutput() (_TRISB13 = 0)
 
 #define JETSON_CALLING_SetHigh()          (_LATB7 = 1)
 

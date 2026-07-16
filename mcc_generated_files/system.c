@@ -53,7 +53,7 @@
 //   I2C1SEL = SEC : the app's Jetson-facing I2C1 slave is wired to the
 //                   ALTERNATE pins (ASDA1/ASCL1 = RB5/RB6); PRI would attach
 //                   the module to RB8/RB9, which the app uses as GPIO
-//                   (INTERRUPT_TO_JETSON / RED_LED_ON).
+//                   (INTERRUPT_TO_JETSON / BI_LED_RED_ON).
 //   IOL1WAY = OFF : both this bootloader and the app perform their own PPS
 //                   unlock/lock sequence; ON would brick the app's PPS setup.
 //   IESO    = ON  : start on FRC while the HS crystal warms up, so code runs

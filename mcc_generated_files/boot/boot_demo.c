@@ -109,8 +109,8 @@ void BOOT_DEMO_Tasks(void)
                  * the bootloader forever -- the reset vector is ours, not
                  * the app's. That was the failed earlier experiment.)
                  */
-                GREEN_LED_SetHigh();
-                RED_LED_SetLow();
+                BI_LED_GREEN_SetHigh();
+                BI_LED_RED_SetLow();
                 boot_handoff_magic = BOOT_HANDOFF_MAGIC;
                 asm("reset");
                 /* not reached */
@@ -119,8 +119,8 @@ void BOOT_DEMO_Tasks(void)
 
         if(inBootloadMode == true)
         {
-            RED_LED_SetHigh();
-            GREEN_LED_SetLow();
+            BI_LED_RED_SetHigh();
+            BI_LED_GREEN_SetLow();
         }
     }
 
