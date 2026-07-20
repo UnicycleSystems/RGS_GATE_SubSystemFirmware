@@ -164,12 +164,34 @@ uint8_t JobIndex;
 
 int main(void)
 {
-   
-    // the next few lines look a bit weird.. attempting to 
-    //recover into power on from a soft reset....... 
-    // just depends if it's fast enough. 
-  
+    /* ---- Cold start vs warm reset (REVIEW) --------------------------------
+     * RCONbits.POR is set by the silicon ONLY on a genuine power-on; software
+     * resets (bootloader handoff, firmware-update reset, InitSelfReset) and
+     * the watchdog leave it clear -- PROVIDED we clear it once per power
+     * cycle, which happens below at the point power-on is complete.
+     *
+     *   warmBoot == true : we were already running before this reset (e.g.
+     *                      just came back from a firmware update). Re-latch
+     *                      our own supply AND keep the Jetson's 5V alive
+     *                      immediately -- microseconds after reset, before
+     *                      SYSTEM_Initialize can let anything sag.
+     *   warmBoot == false: genuine cold start. Touch nothing here; the
+     *                      Jetson stays OFF and power-on follows the normal
+     *                      charger-loop / button-hold flow.
+     */
+    bool warmBoot = (RCONbits.POR == 0);
+
+    if (warmBoot)
+    {
+        HOLD_PWR_SetDigitalOutput();
+        HOLD_PWR_SetHigh();
+        JETSON_5V_ON_SetDigitalOutput();
+        JETSON_5V_ON_SetHigh();
+    }
+
     SYSTEM_Initialize();
+    REAR_LASER_PWM_SetHigh();
+    FRONT_LASER_PWM_SetHigh();
    
     LedOn=0;
     FrontSense=0;
@@ -190,56 +212,86 @@ int main(void)
     // Explicit changes for new versions
     POWER_BUTTON_SetDigitalInput();
     
-    //
+    /* PIN_MANAGER_Initialize (inside SYSTEM_Initialize) bulk-writes the
+     * latches, momentarily dropping both rails; the external FET gates ride
+     * through that dip on capacitance. Re-assert per the boot type (REVIEW):
+     *   warm : restore both rails HIGH -- Jetson must not lose power across
+     *          a reset.
+     *   cold : Jetson rail explicitly OFF; HOLD_PWR left low so the normal
+     *          button-hold flow below decides when to latch power.
+     */
     HOLD_PWR_SetDigitalOutput();
-   //TODO: running as 'auto on-- if poss'' HOLD_PWR_SetLow();
-    //ODCCbits.ODCC1 = 1;
     JETSON_5V_ON_SetDigitalOutput();
-    JETSON_5V_ON_SetLow();
-    
-    
-    // create a branch for VBUS power on state
-   // while VBUS on........ 
-  //button test
-    
-    bool charged;
-    charged =0;
-    //put on red front led
-    // this is the charger loop, will later contain a 'sleep' with wdg wake up
-    while(POWER_BUTTON_GetValue())
-
+    if (warmBoot)
     {
-        ClrWdt();
-        if(!charged)
-        {    
-         RED_LED_ON_SetHigh();
-        __delay_ms(5);
-        RED_LED_ON_SetLow();
-        __delay_ms(1000);
-        }
-        
-        if(VER_0_GetValue())
-        {
-            charged=1;
-            BI_LED_GREEN_SetHigh();//Turn on Green LED
-            BI_LED_RED_SetLow();//Turn off Red LED 
-        }
-        else
-        {
-            charged=0;
-           BI_LED_RED_SetHigh();//Turn off Red LED 
-            BI_LED_GREEN_SetLow();//Turn on Green LED
-        }
-        // wait for some other eventn
-        //or sleep and try again on wake..... 
+        HOLD_PWR_SetHigh();
+        JETSON_5V_ON_SetHigh();
     }
-  // from here, power button detected on...  
-    RED_LED_ON_SetLow();
- //
-     while(!PowerButton(On))//wait for a 'power on  press and hold to complete
-         ClrWdt();
-     BI_LED_GREEN_SetHigh();//Turn on Green LED
-     BI_LED_RED_SetLow();//Turn off Red LED
+    else
+    {
+        JETSON_5V_ON_SetLow();
+    }
+    
+    
+    /* Cold start only: charger display loop + button-hold power-on. A warm
+     * boot (e.g. returning from a firmware update) is already latched on
+     * with the Jetson powered -- it must NOT sit waiting for a button that
+     * nobody is going to press (REVIEW). */
+    if (!warmBoot)
+    {
+        // create a branch for VBUS power on state
+       // while VBUS on........
+      //button test
+
+        bool charged;
+        charged =0;
+        //put on red front led
+        // this is the charger loop, will later contain a 'sleep' with wdg wake up
+        while(POWER_BUTTON_GetValue())
+
+        {
+            ClrWdt();
+            if(!charged)
+            {
+             RED_LED_ON_SetHigh();
+            __delay_ms(5);
+            RED_LED_ON_SetLow();
+            __delay_ms(1000);
+            }
+
+            if(VER_0_GetValue())
+            {
+                charged=1;
+                BI_LED_GREEN_SetHigh();//Turn on Green LED
+                BI_LED_RED_SetLow();//Turn off Red LED
+            }
+            else
+            {
+                charged=0;
+               BI_LED_RED_SetHigh();//Turn off Red LED
+                BI_LED_GREEN_SetLow();//Turn on Green LED
+            }
+            // wait for some other eventn
+            //or sleep and try again on wake.....
+        }
+      // from here, power button detected on...
+        RED_LED_ON_SetLow();
+     //
+         while(!PowerButton(On))//wait for a 'power on  press and hold to complete
+             ClrWdt();
+    }
+    /* Both paths are now "powered and running": show green. */
+    BI_LED_GREEN_SetHigh();//Turn on Green LED
+    BI_LED_RED_SetLow();//Turn off Red LED
+
+    /* Power-on is complete: clear the power-on reset-cause bits so every
+     * later reset in this power cycle reads as warm (POR==0). Deliberately
+     * placed AFTER the button-hold: if we crash or watchdog out of the
+     * charger loop / hold-count above, POR is still set and the retry is
+     * correctly treated as another cold start. SWR/WDTO are left untouched
+     * for any future reset-cause diagnostics (nothing reads them today). */
+    RCONbits.POR = 0;
+    RCONbits.BOR = 0;
 
   // #define RunPOST
 #ifdef RunPOST
@@ -316,7 +368,14 @@ int main(void)
              PowerDown();
 #endif
           if(DoTask) //this is set periodically by the TMR2 interrupt. Nominally 1 second.
-             {   
+             {
+              if(SelfResetTimeout)
+              {
+                if(!SelfResetTimeout--)
+                    CancelReset();
+              }
+                
+              
               DoTask=0; // clear it straight away, it will re set in due course! 
                 Task[TaskIndex](); 
                 TaskIndex++;
@@ -685,7 +744,7 @@ void PowerDown(void)
             __delay_ms(50);
         }
 
-        asm("reset");
+       
     }
     return;
     

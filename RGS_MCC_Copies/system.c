@@ -103,6 +103,17 @@
 void SYSTEM_Initialize(void)
 {
     PIN_MANAGER_Initialize();
+    if(RCONbits.POR == 0)
+    {
+       
+        HOLD_PWR_SetDigitalOutput();
+        HOLD_PWR_SetHigh();
+        JETSON_5V_ON_SetDigitalOutput();
+        JETSON_5V_ON_SetHigh();
+    }  
+    
+  
+   
     CLOCK_Initialize();
     INTERRUPT_Initialize();
     //OC4_Initialize();

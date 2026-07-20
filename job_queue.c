@@ -4,7 +4,7 @@
 #include "RGS_MCC_Copies/pin_manager.h"
 #include "RGS_MCC_Copies/i2c1.h"
 #include "Events.h"
-
+#include "RGS_MCC_Copies/pin_manager.h"
 
 #define JOB_QUEUE_SIZE 8   // must be a power of 2
 
@@ -33,6 +33,7 @@ void ConfirmSelfReset();// second stage of reset mechanism-- do within 10s of In
 //order as the #defienes in EEpromBlockLbels.h
 void (*EEPromJob[NUM_EEpromJobs])(void)={SetLasers,SetIRLevel,SetBallSpeedCal,ChangeMode,ConfigAccelerometer,GenPurpJob,InitSelfReset,ConfirmSelfReset};
 uint8_t EEpromJobIndex;
+
 
 // similarl scheme to 'tasks' however these are not on the ticker, these
 // are queued 'RTos' like jobs. attempted every pass of main loop.
@@ -141,14 +142,43 @@ void ChangeMode()   // go into other modes - eg survey, self test, etc
 }
 void InitSelfReset()    // First stage of reset mechanism
 {
-    //for now, single stage....
-    asm("reset");
-    while(1);
+    if(EMULATE_EEPROM_Memory[169]==0x56)
+    {
+        EMULATE_EEPROM_Memory[169]=0;
+        BI_LED_GREEN_SetLow();
+        BI_LED_RED_SetHigh();
+        SelfResetTimeout=10;
+    }
+    //TODO: option to add on an error report to jetson
     
 }
 
 void ConfirmSelfReset() // second stage of reset mechanism-- do within 10s of InitSelfReset
 {
+    if(SelfResetTimeout&&(EMULATE_EEPROM_Memory[170]==0x2F))
+    {
+        asm("reset");
+        while(1);
+    }
+    else
+    {
+       EMULATE_EEPROM_Memory[169]=0;
+       EMULATE_EEPROM_Memory[170]=0;
+       BI_LED_GREEN_SetLow();
+       BI_LED_RED_SetHigh(); 
+    }
+    //TODO: option to add on an error report to jetson
+    
+    
+}
+
+void CancelReset()// if confirm reset not called in time, then clear 
+{
+    BI_LED_GREEN_SetHigh();
+    BI_LED_RED_SetLow();
+    EMULATE_EEPROM_Memory[169]=0;
+    EMULATE_EEPROM_Memory[170]=0;
+    SelfResetTimeout=0;  //can't assume it must be, as we may somehowe directly call this 
     
 }
 

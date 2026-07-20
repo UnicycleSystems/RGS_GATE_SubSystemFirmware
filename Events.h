@@ -27,13 +27,14 @@ extern "C" {
     {
         unsigned int i2cQueJobWaiting :   1;   // A command from the jetson has been loaded on the queue
         unsigned int JobWaiting : 1;  
+        unsigned int ResetPending : 1;
           //
         
         //etc, so up to 16 flags in total
         
     }Events;
     
-    extern volatile Events EventJob;
+  extern volatile Events EventJob;
    
   typedef struct ActionFlags
     {
@@ -54,7 +55,9 @@ extern "C" {
     }Actions;
     
     extern volatile Actions RtosActions;   
+  
     
+  extern volatile uint8_t SelfResetTimeout;
   void ClearAllEvents(void);
   
  
