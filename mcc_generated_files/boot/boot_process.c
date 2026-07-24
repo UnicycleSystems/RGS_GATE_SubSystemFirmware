@@ -50,6 +50,18 @@
 
 static uint8_t commandArray[BOOT_CONFIG_MAX_PACKET_SIZE];
 
+/* Set when this bootloader session has actually modified flash (a successful
+ * erase or write). Used by ResetDevice(): a reset that follows a programming
+ * session clears RCON.POR/BOR first, so the freshly-updated application boots
+ * seeing a WARM reset (POR==0) and resumes with the Jetson rail held -- even
+ * if the session itself began from a cold start (bench provisioning, first
+ * flash of a new app build).
+ *
+ * Deliberately NOT set on pass-through or query-only boots: the bootloader
+ * runs on every single boot, and clearing POR unconditionally would blind the
+ * application's cold-start detection forever. */
+static bool sessionProgrammed = false;
+
 enum BOOT_COMMAND_RESPONSES
 {
     COMMAND_SUCCESS = 0x01,
@@ -249,7 +261,17 @@ static void ResetDevice(void)
     (void)BOOT_COM_Read(commandArray, sizeof(struct CMD_STRUCT_0));
 
     BOOT_COM_Write((uint8_t*) & response, sizeof (struct RESPONSE_TYPE_0) / sizeof (uint8_t));
-    
+
+    /* Post-upload resets must look WARM to the application (see the
+     * sessionProgrammed comment above). A genuine power cycle after an
+     * upload still reads cold -- the hardware sets POR again -- which is
+     * the honest semantic. */
+    if (sessionProgrammed)
+    {
+        RCONbits.POR = 0;
+        RCONbits.BOR = 0;
+    }
+
     Reset();
  }
 
@@ -267,7 +289,8 @@ static enum BOOT_COMMAND_RESULT EraseFlash(void)
     if ( BOOT_BlockErase(pCommand->address, pCommand->dataLength, pCommand->unlockSequence) == NVM_SUCCESS)
     {
         response.success = COMMAND_SUCCESS;
-    }     
+        sessionProgrammed = true;   /* flash modified: post-session reset reads warm */
+    }
     
     BOOT_COM_Write((uint8_t*) & response, sizeof (struct RESPONSE_TYPE_0) / sizeof (uint8_t));
 
@@ -307,9 +330,13 @@ static enum BOOT_COMMAND_RESULT WriteFlash(void)
     {
         if (BOOT_BlockWrite(pCommand->address, dataLength, &pCommand->data[0], pCommand->unlockSequence) != NVM_SUCCESS)
         {
-            response.success = BAD_ADDRESS;   
-        } 
-    }   
+            response.success = BAD_ADDRESS;
+        }
+        else
+        {
+            sessionProgrammed = true;   /* flash modified: post-session reset reads warm */
+        }
+    }
     else
     {
         response.success = BAD_ADDRESS;

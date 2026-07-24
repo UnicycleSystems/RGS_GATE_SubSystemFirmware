@@ -78,8 +78,25 @@
 #pragma config FWDTEN = ON    //Watchdog Timer Enable->Watchdog Timer is enabled (period = 4.1ms prescaled LPRC tick x WDTPS postscale; PS2048 -> ~8.4s)
 #pragma config ICS = PGx1    //Comm Channel Select->Emulator EMUC1/EMUD1 pins are shared with PGC1/PGD1
 #pragma config BKBUG = OFF    //Background Debug->Device resets into Operational mode
-#pragma config GWRP = OFF    //General Code Segment Write Protect->Writes to program memory are allowed
-#pragma config GCP = OFF    //General Code Segment Code Protect->Code protection is disabled
+//   GWRP = OFF : MUST stay OFF. General-segment write protect blocks run-time
+//                (RTSP) writes to program flash -- which is exactly how this
+//                bootloader programs the application. GWRP=ON would break all
+//                field updates. The boot region is instead protected in
+//                software by BOOT's IsLegalRange() check (UART writes are
+//                confined to 0x2400-0xA7FE).
+//   GCP  = ON  : code-READ protect. Blocks reading program memory back out
+//                through the ICSP/programmer interface -- protects both the
+//                bootloader and the application IP (whole-chip: one flash, one
+//                fuse, cannot be applied to just one). Does NOT hinder the
+//                CPU's own TBLRD reads, so BOOT_ImageVerify()/CRCFlash still
+//                work. A bulk (chip) erase still clears protection, which is
+//                how you re-provision a unit via ICSP.
+//                *** VERIFY BEFORE RELEASE (see notes to Peter): confirm on
+//                real silicon that after GCP=ON a full field update still
+//                completes AND self-verify passes; and that the programmer
+//                readback is genuinely refused. ***
+#pragma config GWRP = OFF    //General Code Segment Write Protect->Writes to program memory are allowed (REQUIRED for bootloader RTSP)
+#pragma config GCP = ON    //General Code Segment Code Protect->Code READ protection enabled (IP protection; whole device)
 #pragma config JTAGEN = OFF    //JTAG Port Enable->JTAG port is disabled
 
 #include "pin_manager.h"

@@ -135,6 +135,16 @@
 #define REAR_LASER_PWM_SetHigh()          (_LATC2 = 1)
 
 
+
+#define POWER_BUTTON_GetValue()         _RB10
+#define POWER_BUTTON_SetDigitalInput()  (_TRISB10 = 1)
+#define POWER_BUTTON_PRESSED()    !POWER_BUTTON_GetValue() 
+
+#define RED_LED_ON_SetHigh()          (_LATB9 = 1)
+#define RED_LED_ON_SetLow()           (_LATB9 = 0)
+#define RED_LED_ON_Toggle()           (_LATB9 ^= 1)
+#define RED_LED_ON_SetDigitalOutput() (_TRISB9 = 0)
+
 void PIN_MANAGER_Initialize (void);
 
 
