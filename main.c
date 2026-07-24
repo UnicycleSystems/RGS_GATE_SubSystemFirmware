@@ -195,7 +195,7 @@ int main(void)
     SYSTEM_Initialize();
     REAR_LASER_PWM_SetHigh();
     FRONT_LASER_PWM_SetHigh();
-   
+
     LedOn=0;
     FrontSense=0;
     RearSense=0;
@@ -217,24 +217,27 @@ int main(void)
     
     /* PIN_MANAGER_Initialize (inside SYSTEM_Initialize) bulk-writes the
      * latches, momentarily dropping both rails; the external FET gates ride
-     * through that dip on capacitance. Re-assert per the boot type (REVIEW):
-     *   warm : restore both rails HIGH -- Jetson must not lose power across
-     *          a reset.
-     *   cold : Jetson rail explicitly OFF; HOLD_PWR left low so the normal
-     *          button-hold flow below decides when to latch power.
+     * through that dip on capacitance. Re-assert per the boot type:
+     *   warm : both rails HIGH -- Jetson must not lose power across a reset.
+     *   cold : HOLD_PWR stays HIGH (we MUST keep our own supply latched --
+     *          we arrived here from a bootloader handoff-reset, the button is
+     *          already released, and on battery there is nothing else holding
+     *          3V3 up; dropping HOLD_PWR here powers the device straight off
+     *          before the charger loop ever runs). Jetson rail stays OFF so
+     *          the charge-indication state is Jetson-dark until power-on
+     *          completes via the button.
      */
     HOLD_PWR_SetDigitalOutput();
     JETSON_5V_ON_SetDigitalOutput();
+    HOLD_PWR_SetHigh();                  /* keep our own supply latched, both boot types */
     if (warmBoot)
     {
-        HOLD_PWR_SetHigh();
-        JETSON_5V_ON_SetHigh(); 
+        JETSON_5V_ON_SetHigh();
     }
     else
     {
         JETSON_5V_ON_SetLow();
-        HOLD_PWR_SetLow();
-    } 
+    }
     
     
     /* Cold start only: charger display loop + button-hold power-on. A warm

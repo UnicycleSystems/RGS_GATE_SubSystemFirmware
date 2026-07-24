@@ -103,15 +103,22 @@
 void SYSTEM_Initialize(void)
 {
     PIN_MANAGER_Initialize();
+    /* PIN_MANAGER_Initialize just drove LATA=0, dropping HOLD_PWR (RA10) low.
+     * Re-latch our own supply IMMEDIATELY and UNCONDITIONALLY -- on a cold
+     * boot from the bootloader handoff the button is already released and, on
+     * battery, HOLD_PWR is the only thing holding 3V3 up; leaving it low here
+     * powers the device off partway through startup. Only PowerDown() drops
+     * it deliberately. The Jetson 5V rail is kept alive only on a warm boot
+     * (POR==0) so it survives a firmware-update reset; on a cold boot it
+     * stays dark until power-on completes. */
+    HOLD_PWR_SetDigitalOutput();
+    HOLD_PWR_SetHigh();
     if(RCONbits.POR == 0)
     {
-       
-        HOLD_PWR_SetDigitalOutput();
-        HOLD_PWR_SetHigh();
         JETSON_5V_ON_SetDigitalOutput();
         JETSON_5V_ON_SetHigh();
-    }  
-    
+    }
+
   
    
     CLOCK_Initialize();
