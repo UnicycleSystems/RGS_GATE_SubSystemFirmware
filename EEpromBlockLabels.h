@@ -53,9 +53,13 @@ extern "C" {
 #define AccelerometerXYZ_RawNumBytes 6
 
 #define AccelerometerXYZ_DegAddr (AccelerometerXYZ_RawAddr + AccelerometerXYZ_RawNumBytes  )
-#define AccelerometerXYZ_DegNumBytes 3
+#define AccelerometerXYZ_DegNumBytes 6
 
-#define BatteryChargeStateAddr (AccelerometerXYZ_DegAddr + AccelerometerXYZ_DegNumBytes  )
+#define PitchAndRoll_Addr ( AccelerometerXYZ_DegAddr + AccelerometerXYZ_DegNumBytes)
+#define PitchAndRollNumBytes 4
+    
+
+#define BatteryChargeStateAddr (PitchAndRoll_Addr + PitchAndRollNumBytes  )
 #define BatteryChargeStateNumBytes 1
     
 

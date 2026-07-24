@@ -24,6 +24,7 @@
 
 #define FCY 16000000UL  // or whatever your instruction clock is
 #include <libpic30.h>
+#include "pitchandroll.h"
 
 
 //accelerometer specific stuff....
@@ -35,6 +36,7 @@
 #define REG_WHO_AM_I        0x0F    /* expect 0x44 */
 #define REG_CTRL1           0x20
 #define REG_CTRL2           0x21
+#define REG_CTRL6           0x25
 #define REG_OUT_X_L         0x28    /* then X_H, Y_L, Y_H, Z_L, Z_H */
 
 #define CTRL2_BDU           (1u << 3)
@@ -48,8 +50,10 @@
 #define On 1
 #define Off 0
 
-
-
+//round robin possible tasks
+void GetBattVolts(void);
+void GetAccel(void);
+void DummyTask(void);
 
 ///Test functions switches
 
@@ -58,9 +62,12 @@
 
 // round robin tasks
 //only one of these should be active
+//#define Standard
+
+//only one of these should be active
 //#define Test1
 //#define Test2
-#define Standard
+#define TestNewBattBoard
 
 
 
@@ -83,10 +90,13 @@ void (*Task[NUM_Tasks])(void)={Test2PatternA,Test2PatternB};
 
 #ifdef Standard
 #define NUM_Tasks 2
-void GetBattVolts(void);
-void GetAccel(void);
 void (*Task[NUM_Tasks])(void)={GetAccel,GetBattVolts};
 
+#endif
+
+#ifdef TestNewBattBoard
+#define NUM_Tasks 2
+void (*Task[NUM_Tasks])(void)={GetAccel,DummyTask};
 #endif
 
 // these are the 'ticker' tasks, worked through once per second,
@@ -141,14 +151,6 @@ void PWM_RB11_Enable(void);
 void PWM_RB11_Disable(void);
 void PWM_RB11_SetDuty(uint8_t duty);
 
- int16_t x;
- int16_t y;
- int16_t z;
- int16_t a;
- int16_t xx;
- int16_t yy;
- int16_t zz;
- 
  uint8_t testval;
  
 // power management
@@ -179,7 +181,7 @@ int main(void)
      *                      Jetson stays OFF and power-on follows the normal
      *                      charger-loop / button-hold flow.
      */
-    bool warmBoot = (RCONbits.POR == 0);
+    bool warmBoot = ((RCONbits.POR == 0));
 
     if (warmBoot)
     {
@@ -187,6 +189,7 @@ int main(void)
         HOLD_PWR_SetHigh();
         JETSON_5V_ON_SetDigitalOutput();
         JETSON_5V_ON_SetHigh();
+        
     }
 
     SYSTEM_Initialize();
@@ -225,12 +228,13 @@ int main(void)
     if (warmBoot)
     {
         HOLD_PWR_SetHigh();
-        JETSON_5V_ON_SetHigh();
+        JETSON_5V_ON_SetHigh(); 
     }
     else
     {
         JETSON_5V_ON_SetLow();
-    }
+        HOLD_PWR_SetLow();
+    } 
     
     
     /* Cold start only: charger display loop + button-hold power-on. A warm
@@ -375,12 +379,13 @@ int main(void)
                     CancelReset();
               }
                 
-              
+             
               DoTask=0; // clear it straight away, it will re set in due course! 
                 Task[TaskIndex](); 
                 TaskIndex++;
                 if(TaskIndex>=NUM_Tasks)
                     TaskIndex=0;  
+
              }
  //----------------------------------
 // -- check to see if an i2c 'write' - ie job load is pending             
@@ -552,7 +557,7 @@ void ShutdownProcessTemp()
     }
         RED_LED_ON_SetLow();         
 
-   JETSON_5V_ON_SetLow();
+   JETSON_5V_ON_SetHigh();//temp flip
         
     ButtonCount=0;
     while(ButtonCount<10)
@@ -574,7 +579,7 @@ void ShutdownProcessTemp()
     }
        BI_LED_GREEN_SetLow();       
    
-     JETSON_5V_ON_SetHigh();
+     JETSON_5V_ON_SetLow();//tempflip
     
 }
 
@@ -660,11 +665,24 @@ bool LIS2DW12_Init_I2C2(void)
     s_addr=0x19;
 
     EMULATE_EEPROM_Memory[31] = s_addr;
-
-    if (!i2c2_write_u8(s_addr, REG_CTRL2, (uint8_t)(CTRL2_BDU | CTRL2_IF_ADD_INC)))
+    
+    
+// Explicitly enter power-down
+    if (!i2c2_write_u8(s_addr, REG_CTRL1, 0x00))
+    {
+        EMULATE_EEPROM_Memory[33] = 0xC0;
+        return false;
+    }
+    
+    if (!i2c2_write_u8(s_addr, REG_CTRL2, 0x0C))
         { EMULATE_EEPROM_Memory[32] = 0xC2; return false; }
 
-    if (!i2c2_write_u8(s_addr, REG_CTRL1, 0x50))   // ~100 Hz, FS �2g
+   
+    
+    if (!i2c2_write_u8(s_addr, REG_CTRL6, 0xC4))   // ~100 Hz, FS �2g
+        { EMULATE_EEPROM_Memory[33] = 0xC1; return false; }
+    
+     if (!i2c2_write_u8(s_addr, REG_CTRL1, 0x24))   // ~100 Hz, FS �2g
         { EMULATE_EEPROM_Memory[33] = 0xC1; return false; }
 
     EMULATE_EEPROM_Memory[34] = 0x00;     // success
@@ -679,6 +697,10 @@ bool LIS2DW12_ReadXYZ_I2C2(int16_t *x, int16_t *y, int16_t *z)
     *x = (int16_t)((uint16_t)raw[1] << 8 | raw[0]);
     *y = (int16_t)((uint16_t)raw[3] << 8 | raw[2]);
     *z = (int16_t)((uint16_t)raw[5] << 8 | raw[4]);
+    *x>>=2;
+    *y>>=2;
+    *z>>=2;
+          
     return true;
 }
 
@@ -690,8 +712,11 @@ static bool lis_probe_addr(uint8_t addr)
 
 void QuickAcellerometerGrabber(void)
 {
-
-  
+    uint8_t AddressStart;
+    int16_t pitch;
+    int16_t roll;
+    
+   
         ClrWdt();
         int16_t x, y, z;
         if (LIS2DW12_ReadXYZ_I2C2(&x, &y, &z)) 
@@ -699,7 +724,8 @@ void QuickAcellerometerGrabber(void)
         uint16_t ux = (uint16_t)x;
         uint16_t uy = (uint16_t)y;
         uint16_t uz = (uint16_t)z;
-
+       
+        
         // Pack as [X_H, X_L, Y_H, Y_L, Z_H, Z_L]
         EMULATE_EEPROM_Memory[10]  = (uint8_t)(ux >> 8);
          EMULATE_EEPROM_Memory[11] = (uint8_t)(ux);
@@ -721,12 +747,21 @@ void QuickAcellerometerGrabber(void)
          EMULATE_EEPROM_Memory[14] =0xFF;
          EMULATE_EEPROM_Memory[15] =0xFF; 
         }
+       ComputePitchRoll(x,y,z,&pitch,&roll);
+        uint16_t upitch = (uint16_t)pitch;
+    uint16_t uroll  = (uint16_t)roll;
+    
+       EMULATE_EEPROM_Memory[16] = (uint8_t)(upitch >> 8);
+       EMULATE_EEPROM_Memory[17] = (uint8_t)(upitch);
+       EMULATE_EEPROM_Memory[18] = (uint8_t)(uroll >> 8);
+       EMULATE_EEPROM_Memory[19] = (uint8_t)(uroll);
 }
 
 //refactor into a general purpose button thing...
 void PowerDown(void)
 { 
-
+    uint8_t HoldOffms;
+    HoldOffms = 0;
     if (PowerButton(Off))
     {
         JETSON_5V_ON_SetLow();
@@ -737,13 +772,23 @@ void PowerDown(void)
         // power yet, the MCU reboots while still powered (going through the
         // bootloader) with the button often still held, which re-latches
         // power straight back on instead of turning off.
-        uint8_t offDelay;
-        for (offDelay = 0; offDelay < 10; offDelay++)
+        
+        while(1)
         {
+            
             ClrWdt();
             __delay_ms(50);
+           
+            HoldOffms++;
+            if(HoldOffms >=30)
+            {
+                
+              RCONbits.EXTR = 1;
+              RCONbits.POR=1;
+              RCONbits.BOR=1;
+              asm("reset");  
+            }
         }
-
        
     }
     return;
@@ -858,7 +903,7 @@ void PWM_RB11_SetDuty(uint8_t duty)
 // round robin tasks ...
 /// normal tasks list, 'Standard'
 /// alternative, test builds are 'Test1' and 'Test2'
-#ifdef Standard
+
  void GetBattVolts(void)
  {
    
@@ -884,7 +929,7 @@ void GetAccel(void)
     BI_LED_RED_SetLow();//Turn on Red LED
 }
 
-#endif
+
 
 #ifdef Test1
 void Test1PatternA(void)
@@ -927,4 +972,8 @@ void Test2PatternB(void)
 #endif
 
 
+void DummyTask(void)
+{
+    return;
+}
  

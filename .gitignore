@@ -25,3 +25,10 @@ nbproject/private/
 *~
 Thumbs.db
 .DS_Store
+
+# MCC generated hash flags & runtime logs
+.generated_files/
+queuelogs/
+
+# Microchip MotorBench tool logs
+motorbench/log/

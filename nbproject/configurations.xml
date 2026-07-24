@@ -90,6 +90,7 @@
       <itemPath>i2c_write_queue.c</itemPath>
       <itemPath>address_block_lookup.c</itemPath>
       <itemPath>job_queue.c</itemPath>
+      <itemPath>pitchandroll.c</itemPath>
     </logicalFolder>
   </logicalFolder>
   <sourceRootList>

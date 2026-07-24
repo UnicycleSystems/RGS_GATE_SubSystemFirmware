@@ -1,18 +1,18 @@
 
 /**
-  TMR2 Generated Driver API Source File 
+  TMR3 Generated Driver API Source File 
 
   @Company
     Microchip Technology Inc.
 
   @File Name
-    tmr2.c
+    tmr3.c
 
   @Summary
-    This is the generated source file for the TMR2 driver using PIC24 / dsPIC33 / PIC32MM MCUs
+    This is the generated source file for the TMR3 driver using PIC24 / dsPIC33 / PIC32MM MCUs
 
   @Description
-    This source file provides APIs for driver for TMR2. 
+    This source file provides APIs for driver for TMR3. 
     Generation Information : 
         Product Revision  :  PIC24 / dsPIC33 / PIC32MM MCUs - 1.171.5
         Device            :  PIC24FJ64GA004
@@ -48,8 +48,7 @@
 */
 
 #include <stdio.h>
-#include "tmr2.h"
-#include "../Events.h"
+#include "tmr3.h"
 
 /**
  Section: File specific functions
@@ -81,130 +80,105 @@ typedef struct _TMR_OBJ_STRUCT
 
 } TMR_OBJ;
 
-static TMR_OBJ tmr2_obj;
+static TMR_OBJ tmr3_obj;
 
 /**
   Section: Driver Interface
 */
 
-void TMR2_Initialize (void)
+void TMR3_Initialize (void)
 {
-    //TMR2 0;
-    TMR2 = 0x00;
-    //Period = 1 s; Frequency = 16000000 Hz; Prescaler 1:256; PR2 62499;
-    //PR2 = 62499;
-    // temp. set PR2 to 6250 for 10Hz
-    PR2=62499;
-    //TCKPS 1:256; T32 disabled; TON enabled; TSIDL disabled; TCS FOSC/2; TGATE disabled;
-    T2CON = 0x8030;
+    //TMR3 0; 
+    TMR3 = 0x00;
+    //Period = 0.0001 s; Frequency = 16000000 Hz; PR3 1599; 
+    PR3 = 0x63F;
+    //TCKPS 1:1; TON enabled; TSIDL disabled; TCS FOSC/2; TGATE disabled; 
+    T3CON = 0x8000;
 
-    IFS0bits.T2IF = false;
-    IEC0bits.T2IE = true;
+	
+    tmr3_obj.timerElapsed = false;
 
-    tmr2_obj.timerElapsed = false;
-}
-
-void __attribute__ ( ( interrupt, no_auto_psv ) ) _T2Interrupt ( void )
-{
-    DoTask = 1;
-    IFS0bits.T2IF = false;
 }
 
 
-void TMR2_Tasks_32BitOperation( void )
+void TMR3_Tasks_16BitOperation( void )
 {
     /* Check if the Timer Interrupt/Status is set */
     if(IFS0bits.T3IF)
     {
-        tmr2_obj.count++;
-        tmr2_obj.timerElapsed = true;
+        tmr3_obj.count++;
+        tmr3_obj.timerElapsed = true;
         IFS0bits.T3IF = false;
     }
 }
 
-void TMR2_Period32BitSet( uint32_t value )
+void TMR3_Period16BitSet( uint16_t value )
 {
     /* Update the counter values */
-    PR2 = (value & 0x0000FFFF);
-    PR3 = ((value & 0xFFFF0000)>>16);
+    PR3 = value;
+    /* Reset the status information */
+    tmr3_obj.timerElapsed = false;
 }
 
-uint32_t TMR2_Period32BitGet( void )
+uint16_t TMR3_Period16BitGet( void )
 {
-    uint32_t periodVal = 0xFFFFFFFF;
-
-    /* get the timer period value and return it */
-    periodVal = (((uint32_t)PR3 <<16) | PR2);
-
-    return( periodVal );
-
+    return( PR3 );
 }
 
-void TMR2_Counter32BitSet( uint32_t value )
+void TMR3_Counter16BitSet ( uint16_t value )
 {
     /* Update the counter values */
-   TMR3HLD = ((value & 0xFFFF0000)>>16);
-   TMR2 = (value & 0x0000FFFF);
-
+    TMR3 = value;
+    /* Reset the status information */
+    tmr3_obj.timerElapsed = false;
 }
 
-uint32_t TMR2_Counter32BitGet( void )
+uint16_t TMR3_Counter16BitGet( void )
 {
-    uint32_t countVal = 0xFFFFFFFF;
-    uint16_t countValUpper;
-    uint16_t countValLower;
-
-    countValLower = TMR2;
-    countValUpper = TMR3HLD;
-
-    /* get the current counter value and return it */
-    countVal = (((uint32_t)countValUpper<<16)| countValLower );
-
-    return( countVal );
-
+    return( TMR3 );
 }
 
 
 
 
-void TMR2_Start( void )
+void TMR3_Start( void )
 {
     /* Reset the status information */
-    tmr2_obj.timerElapsed = false;
+    tmr3_obj.timerElapsed = false;
 
 
     /* Start the Timer */
-    T2CONbits.TON = 1;
+    T3CONbits.TON = 1;
 }
 
-void TMR2_Stop( void )
+void TMR3_Stop( void )
 {
     /* Stop the Timer */
-    T2CONbits.TON = false;
+    T3CONbits.TON = false;
 
 }
 
-bool TMR2_GetElapsedThenClear(void)
+bool TMR3_GetElapsedThenClear(void)
 {
     bool status;
     
-    status = tmr2_obj.timerElapsed;
+    status = tmr3_obj.timerElapsed;
 
     if(status == true)
     {
-        tmr2_obj.timerElapsed = false;
+        tmr3_obj.timerElapsed = false;
     }
     return status;
 }
 
-int TMR2_SoftwareCounterGet(void)
+int TMR3_SoftwareCounterGet(void)
 {
-    return tmr2_obj.count;
+    return tmr3_obj.count;
 }
 
-void TMR2_SoftwareCounterClear(void)
+void TMR3_SoftwareCounterClear(void)
 {
-    tmr2_obj.count = 0; 
+    tmr3_obj.count = 0; 
 }
 
 /**

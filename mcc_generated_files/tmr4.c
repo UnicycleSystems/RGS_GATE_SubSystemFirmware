@@ -1,18 +1,18 @@
 
 /**
-  TMR2 Generated Driver API Source File 
+  TMR4 Generated Driver API Source File 
 
   @Company
     Microchip Technology Inc.
 
   @File Name
-    tmr2.c
+    tmr4.c
 
   @Summary
-    This is the generated source file for the TMR2 driver using PIC24 / dsPIC33 / PIC32MM MCUs
+    This is the generated source file for the TMR4 driver using PIC24 / dsPIC33 / PIC32MM MCUs
 
   @Description
-    This source file provides APIs for driver for TMR2. 
+    This source file provides APIs for driver for TMR4. 
     Generation Information : 
         Product Revision  :  PIC24 / dsPIC33 / PIC32MM MCUs - 1.171.5
         Device            :  PIC24FJ64GA004
@@ -48,12 +48,13 @@
 */
 
 #include <stdio.h>
-#include "tmr2.h"
-#include "../Events.h"
+#include "tmr4.h"
 
 /**
  Section: File specific functions
 */
+void (*TMR4_InterruptHandler)(void) = NULL;
+void TMR4_CallBack(void);
 
 /**
   Section: Data Type Definitions
@@ -81,81 +82,92 @@ typedef struct _TMR_OBJ_STRUCT
 
 } TMR_OBJ;
 
-static TMR_OBJ tmr2_obj;
+static TMR_OBJ tmr4_obj;
 
 /**
   Section: Driver Interface
 */
 
-void TMR2_Initialize (void)
+void TMR4_Initialize (void)
 {
-    //TMR2 0;
-    TMR2 = 0x00;
-    //Period = 1 s; Frequency = 16000000 Hz; Prescaler 1:256; PR2 62499;
-    //PR2 = 62499;
-    // temp. set PR2 to 6250 for 10Hz
-    PR2=62499;
-    //TCKPS 1:256; T32 disabled; TON enabled; TSIDL disabled; TCS FOSC/2; TGATE disabled;
-    T2CON = 0x8030;
+    //TMR5 0; 
+    TMR5 = 0x00;
+    //PR5 244; 
+    PR5 = 0xF4;
+    //TMR4 0; 
+    TMR4 = 0x00;
+    //Period = 1 s; Frequency = 16000000 Hz; PR4 9215; 
+    PR4 = 0x23FF;
+    //TCKPS 1:1; T32 32 Bit; TON enabled; TSIDL disabled; TCS FOSC/2; TGATE disabled; 
+    T4CON = 0x8008;
 
-    IFS0bits.T2IF = false;
-    IEC0bits.T2IE = true;
+    if(TMR4_InterruptHandler == NULL)
+    {
+        TMR4_SetInterruptHandler(&TMR4_CallBack);
+    }
 
-    tmr2_obj.timerElapsed = false;
+    IFS1bits.T5IF = false;
+    IEC1bits.T5IE = true;
+	
+    tmr4_obj.timerElapsed = false;
+
 }
 
-void __attribute__ ( ( interrupt, no_auto_psv ) ) _T2Interrupt ( void )
-{
-    DoTask = 1;
-    IFS0bits.T2IF = false;
-}
 
-
-void TMR2_Tasks_32BitOperation( void )
+void __attribute__ ( ( interrupt, no_auto_psv ) ) _T5Interrupt (  )
 {
     /* Check if the Timer Interrupt/Status is set */
-    if(IFS0bits.T3IF)
-    {
-        tmr2_obj.count++;
-        tmr2_obj.timerElapsed = true;
-        IFS0bits.T3IF = false;
+
+    //***User Area Begin
+
+    // ticker function call;
+    // ticker is 1 -> Callback function gets called everytime this ISR executes
+    if(TMR4_InterruptHandler) 
+    { 
+        TMR4_InterruptHandler(); 
     }
+
+    //***User Area End
+
+    tmr4_obj.count++;
+    tmr4_obj.timerElapsed = true;
+    IFS1bits.T5IF = false;
 }
 
-void TMR2_Period32BitSet( uint32_t value )
+void TMR4_Period32BitSet( uint32_t value )
 {
     /* Update the counter values */
-    PR2 = (value & 0x0000FFFF);
-    PR3 = ((value & 0xFFFF0000)>>16);
+    PR4 = (value & 0x0000FFFF);
+    PR5 = ((value & 0xFFFF0000)>>16);
 }
 
-uint32_t TMR2_Period32BitGet( void )
+uint32_t TMR4_Period32BitGet( void )
 {
     uint32_t periodVal = 0xFFFFFFFF;
 
     /* get the timer period value and return it */
-    periodVal = (((uint32_t)PR3 <<16) | PR2);
+    periodVal = (((uint32_t)PR5 <<16) | PR4);
 
     return( periodVal );
 
 }
 
-void TMR2_Counter32BitSet( uint32_t value )
+void TMR4_Counter32BitSet( uint32_t value )
 {
     /* Update the counter values */
-   TMR3HLD = ((value & 0xFFFF0000)>>16);
-   TMR2 = (value & 0x0000FFFF);
+   TMR5HLD = ((value & 0xFFFF0000)>>16);
+   TMR4 = (value & 0x0000FFFF);
 
 }
 
-uint32_t TMR2_Counter32BitGet( void )
+uint32_t TMR4_Counter32BitGet( void )
 {
     uint32_t countVal = 0xFFFFFFFF;
     uint16_t countValUpper;
     uint16_t countValLower;
 
-    countValLower = TMR2;
-    countValUpper = TMR3HLD;
+    countValLower = TMR4;
+    countValUpper = TMR5HLD;
 
     /* get the current counter value and return it */
     countVal = (((uint32_t)countValUpper<<16)| countValLower );
@@ -165,46 +177,60 @@ uint32_t TMR2_Counter32BitGet( void )
 }
 
 
+void __attribute__ ((weak)) TMR4_CallBack(void)
+{
+    // Add your custom callback code here
+}
 
+void  TMR4_SetInterruptHandler(void (* InterruptHandler)(void))
+{ 
+    IEC1bits.T5IE = false;
+    TMR4_InterruptHandler = InterruptHandler; 
+    IEC1bits.T5IE = true;
+}
 
-void TMR2_Start( void )
+void TMR4_Start( void )
 {
     /* Reset the status information */
-    tmr2_obj.timerElapsed = false;
+    tmr4_obj.timerElapsed = false;
 
+    /*Enable the interrupt*/
+    IEC1bits.T5IE = true;
 
     /* Start the Timer */
-    T2CONbits.TON = 1;
+    T4CONbits.TON = 1;
 }
 
-void TMR2_Stop( void )
+void TMR4_Stop( void )
 {
     /* Stop the Timer */
-    T2CONbits.TON = false;
+    T4CONbits.TON = false;
 
+    /*Disable the interrupt*/
+    IEC1bits.T5IE = false;
 }
 
-bool TMR2_GetElapsedThenClear(void)
+bool TMR4_GetElapsedThenClear(void)
 {
     bool status;
     
-    status = tmr2_obj.timerElapsed;
+    status = tmr4_obj.timerElapsed;
 
     if(status == true)
     {
-        tmr2_obj.timerElapsed = false;
+        tmr4_obj.timerElapsed = false;
     }
     return status;
 }
 
-int TMR2_SoftwareCounterGet(void)
+int TMR4_SoftwareCounterGet(void)
 {
-    return tmr2_obj.count;
+    return tmr4_obj.count;
 }
 
-void TMR2_SoftwareCounterClear(void)
+void TMR4_SoftwareCounterClear(void)
 {
-    tmr2_obj.count = 0; 
+    tmr4_obj.count = 0; 
 }
 
 /**
