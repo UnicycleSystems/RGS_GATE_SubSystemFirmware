@@ -240,52 +240,68 @@ int main(void)
     }
     
     
-    /* Cold start only: charger display loop + button-hold power-on. A warm
-     * boot (e.g. returning from a firmware update) is already latched on
-     * with the Jetson powered -- it must NOT sit waiting for a button that
-     * nobody is going to press (REVIEW). */
+    /* Cold-start power-on. Warm boots (firmware-update resume) skip all of
+     * this. The path splits on whether the charger is present, read from
+     * /ACOK on RA7 (DEBUG_IN): the charger IC pulls it LOW when AC is
+     * present, an external pull-up holds it HIGH otherwise.
+     *
+     *   NO charger  -> the only way 3V3 came up on battery is a deliberate
+     *                  button press, so power straight up and run. HOLD_PWR
+     *                  is already latched high -> single press, no charger
+     *                  loop, no second press.
+     *
+     *   Charger present -> the charger forced us on; the user has not asked
+     *                  to run yet. RELEASE HOLD_PWR so the charger alone
+     *                  holds the rail -- then pulling the charger while still
+     *                  idle drops power and the unit goes fully off (no
+     *                  latched-on-but-idle limbo). Show charge status and
+     *                  wait for a button press; on press, re-latch HOLD_PWR
+     *                  and power up. Once latched, unplugging keeps us
+     *                  running on battery.
+     *
+     * Safety: HOLD_PWR is only released when the charger DEFINITELY reads
+     * present (RA7 == 0). Any other reading falls through to run-and-stay-
+     * latched, so a misread can never strand a battery boot dead. */
     if (!warmBoot)
     {
-        // create a branch for VBUS power on state
-       // while VBUS on........
-      //button test
-
-        bool charged;
-        charged =0;
-        //put on red front led
-        // this is the charger loop, will later contain a 'sleep' with wdg wake up
-        while(POWER_BUTTON_GetValue())
-
+        if (DEBUG_IN_GetValue() == 0)      /* /ACOK low -> charger present */
         {
-            ClrWdt();
-            if(!charged)
-            {
-             RED_LED_ON_SetHigh();
-            __delay_ms(5);
-            RED_LED_ON_SetLow();
-            __delay_ms(1000);
-            }
+            bool charged;
+            charged = 0;
+            HOLD_PWR_SetLow();             /* charger holds the rail; unplug-while-idle -> off */
 
-            if(VER_0_GetValue())
+            while(POWER_BUTTON_GetValue()) /* wait for a button press to power on */
             {
-                charged=1;
-                BI_LED_GREEN_SetHigh();//Turn on Green LED
-                BI_LED_RED_SetLow();//Turn off Red LED
+                ClrWdt();
+                if(!charged)
+                {
+                 RED_LED_ON_SetHigh();
+                __delay_ms(5);
+                RED_LED_ON_SetLow();
+                __delay_ms(1000);
+                }
+
+                if(VER_0_GetValue())
+                {
+                    charged=1;
+                    BI_LED_GREEN_SetHigh();//Turn on Green LED
+                    BI_LED_RED_SetLow();//Turn off Red LED
+                }
+                else
+                {
+                    charged=0;
+                   BI_LED_RED_SetHigh();//Turn off Red LED
+                    BI_LED_GREEN_SetLow();//Turn on Green LED
+                }
             }
-            else
-            {
-                charged=0;
-               BI_LED_RED_SetHigh();//Turn off Red LED
-                BI_LED_GREEN_SetLow();//Turn on Green LED
-            }
-            // wait for some other eventn
-            //or sleep and try again on wake.....
+            // button pressed: take ownership of our own supply and power on
+            RED_LED_ON_SetLow();
+            HOLD_PWR_SetHigh();
+            while(!PowerButton(On))//wait for a 'power on' press and hold to complete
+                ClrWdt();
         }
-      // from here, power button detected on...
-        RED_LED_ON_SetLow();
-     //
-         while(!PowerButton(On))//wait for a 'power on  press and hold to complete
-             ClrWdt();
+        /* else: no charger -> battery button-boot -> HOLD_PWR already high,
+         * fall straight through to running. Single press. */
     }
     /* Both paths are now "powered and running": show green. */
     BI_LED_GREEN_SetHigh();//Turn on Green LED
