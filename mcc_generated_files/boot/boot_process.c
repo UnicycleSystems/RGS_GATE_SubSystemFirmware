@@ -68,8 +68,13 @@ enum BOOT_COMMAND_RESPONSES
     UNSUPPORTED_COMMAND = 0xFF,
     BAD_ADDRESS = 0xFE,
     BAD_LENGTH  = 0xFD,
-    VERIFY_FAIL = 0xFC
+    VERIFY_FAIL = 0xFC,
+    NO_CHARGER  = 0xFB   /* erase/write refused: charger not present (see BOOT_REQUIRE_CHARGER_FOR_UPDATE) */
 };
+
+/* Charger present when /ACOK (RA7) is pulled LOW by the charger IC; an
+ * external pull-up holds it high when no AC is connected. */
+#define CHARGER_PRESENT()   (PORTAbits.RA7 == 0)
 
 enum BOOT_COMMAND
 {
@@ -286,6 +291,14 @@ static enum BOOT_COMMAND_RESULT EraseFlash(void)
     memcpy(&response, commandArray, sizeof(struct CMD_STRUCT_0));
 
     response.success = BAD_ADDRESS;
+#if BOOT_REQUIRE_CHARGER_FOR_UPDATE
+    if ( !CHARGER_PRESENT() )
+    {
+        /* Refuse to erase flash without stable (charger) power. */
+        response.success = NO_CHARGER;
+    }
+    else
+#endif
     if ( BOOT_BlockErase(pCommand->address, pCommand->dataLength, pCommand->unlockSequence) == NVM_SUCCESS)
     {
         response.success = COMMAND_SUCCESS;
@@ -326,6 +339,14 @@ static enum BOOT_COMMAND_RESULT WriteFlash(void)
     response.success = COMMAND_SUCCESS;
 
 
+#if BOOT_REQUIRE_CHARGER_FOR_UPDATE
+    if ( !CHARGER_PRESENT() )
+    {
+        /* Refuse to write flash without stable (charger) power. */
+        response.success = NO_CHARGER;
+    }
+    else
+#endif
     if (dataLength <= (BOOT_CONFIG_MAX_PACKET_SIZE - sizeof(struct CMD_STRUCT_0)))
     {
         if (BOOT_BlockWrite(pCommand->address, dataLength, &pCommand->data[0], pCommand->unlockSequence) != NVM_SUCCESS)

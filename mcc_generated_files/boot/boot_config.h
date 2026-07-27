@@ -52,4 +52,19 @@
 
 #define BOOT_CONFIG_MAX_PACKET_SIZE 0x100
 
+/* ---- Build-time feature switch (RGS) ----------------------------------
+ * When 1, ERASE_FLASH / WRITE_FLASH are refused unless the charger is
+ * present (/ACOK low on RA7) -- prevents a flash operation starting on
+ * unstable battery power. When 0, updates are allowed regardless of
+ * charger (dev/bench builds).
+ *
+ * This is a self-contained compile-time toggle: it changes only a runtime
+ * check inside the bootloader's own code region and does NOT affect the
+ * memory map or the bootloader<->application contract (reset 0x240C, IVT
+ * 0x2600, app region), so a "charger-required" and a "no-check" bootloader
+ * are fully interchangeable under the same application image. The choice is
+ * baked in at ICSP-programming time (the bootloader is not field-updatable).
+ */
+#define BOOT_REQUIRE_CHARGER_FOR_UPDATE 1
+
 #endif
