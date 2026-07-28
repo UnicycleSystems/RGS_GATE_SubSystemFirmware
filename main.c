@@ -13,7 +13,9 @@
 #include "RGS_MCC_Copies/tmr4.h"
 #include "RGS_MCC_Copies/tmr2.h"
 #include "RGS_MCC_Copies/pin_manager.h"
+#include "RGS_MCC_Copies/uart1.h"
 #include "lis2dw12.h"
+#include "bq40z50.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -366,6 +368,11 @@ int main(void)
     RestoreDetect();
    
     LIS2DW12_Init_I2C2();    // TODO: should ensure it inits, or returns an error
+
+    /* --- BQ40Z50-R2 battery pack bring-up (report on UART1) --- */
+    UART1_Initialize();
+    U1BRG = 0x22;            /* MCC file is 9600; 0x22 -> 115200 @ FCY 16 MHz, BRGH=1 */
+    BQ40Z50_BringUp();
   //  uint8_t id = 0x00;
 
   //BI_LED_RED_SetHigh();BI_LED_RED is RED!!!!!

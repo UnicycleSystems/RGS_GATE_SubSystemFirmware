@@ -25,6 +25,7 @@
         <itemPath>RGS_MCC_Copies/i2c2.h</itemPath>
         <itemPath>RGS_MCC_Copies/interrupt_manager.h</itemPath>
         <itemPath>RGS_MCC_Copies/i2c1.h</itemPath>
+        <itemPath>RGS_MCC_Copies/uart1.h</itemPath>
       </logicalFolder>
       <itemPath>pin_CustomISR.h</itemPath>
       <itemPath>i2c_write_queue.h</itemPath>
@@ -32,6 +33,7 @@
       <itemPath>job_queue.h</itemPath>
       <itemPath>EEpromBlockLabels.h</itemPath>
       <itemPath>firmware_version.h</itemPath>
+      <itemPath>bq40z50.h</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
                    displayName="Important Files"
@@ -82,8 +84,10 @@
         <itemPath>RGS_MCC_Copies/i2c2.c</itemPath>
         <itemPath>RGS_MCC_Copies/interrupt_manager.c</itemPath>
         <itemPath>RGS_MCC_Copies/i2c1.c</itemPath>
+        <itemPath>RGS_MCC_Copies/uart1.c</itemPath>
       </logicalFolder>
       <itemPath>main.c</itemPath>
+      <itemPath>bq40z50.c</itemPath>
       <itemPath>Events.h</itemPath>
       <itemPath>Events.c</itemPath>
       <itemPath>JetsonInterface.c</itemPath>
@@ -704,7 +708,7 @@
         <property key="save-temps" value="false"/>
       </C30Global>
       <ICD4Tool>
-        <property key="debugoptions.useswbreakpoints" value="true"/>
+        <property key="debugoptions.useswbreakpoints" value="false"/>
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="programmerToGoFilePath"
                   value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_BringUp.X/debug/standalone/RGS_BringUp_ptg"/>
