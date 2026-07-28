@@ -31,6 +31,7 @@
       <itemPath>address_block_lookup.h</itemPath>
       <itemPath>job_queue.h</itemPath>
       <itemPath>EEpromBlockLabels.h</itemPath>
+      <itemPath>firmware_version.h</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
                    displayName="Important Files"
@@ -44,7 +45,7 @@
         </logicalFolder>
       </logicalFolder>
       <itemPath>Makefile</itemPath>
-      <itemPath>RGS_PuttingGate.mc3</itemPath>
+      <itemPath>RGS_BringUp.mc3</itemPath>
     </logicalFolder>
     <logicalFolder name="LinkerScript"
                    displayName="Linker Files"
@@ -272,7 +273,7 @@
       <ICD4Tool>
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="programmerToGoFilePath"
-                  value="C:/Users/Peter/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_PuttingGate.X/debug/default/RGS_PuttingGate_ptg"/>
+                  value="C:/Users/Peter/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_BringUp.X/debug/default/RGS_BringUp_ptg"/>
       </ICD4Tool>
       <item path="RGS_MCC_Copies/i2c1.c" ex="false" overriding="false">
         <C30>
@@ -405,8 +406,8 @@
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="poweroptions.powerenable" value="false"/>
         <property key="programmerToGoFilePath"
-                  value="C:/Users/Peter/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_PuttingGate.X/debug/default/RGS_PuttingGate_ptg"/>
-        <property key="programmerToGoImageName" value="RGS_PuttingGate_ptg"/>
+                  value="C:/Users/Peter/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_BringUp.X/debug/default/RGS_BringUp_ptg"/>
+        <property key="programmerToGoImageName" value="RGS_BringUp_ptg"/>
         <property key="programoptions.donoteraseauxmem" value="false"/>
         <property key="programoptions.eraseb4program" value="true"/>
         <property key="programoptions.ledbrightness" value="5"/>
@@ -498,8 +499,8 @@
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="poweroptions.powerenable" value="false"/>
         <property key="programmerToGoFilePath"
-                  value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_PuttingGate.X/debug/default/RGS_PuttingGate_ptg"/>
-        <property key="programmerToGoImageName" value="RGS_PuttingGate_ptg"/>
+                  value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_BringUp.X/debug/default/RGS_BringUp_ptg"/>
+        <property key="programmerToGoImageName" value="RGS_BringUp_ptg"/>
         <property key="programoptions.donoteraseauxmem" value="false"/>
         <property key="programoptions.eraseb4program" value="true"/>
         <property key="programoptions.ledbrightness" value="5"/>
@@ -703,9 +704,10 @@
         <property key="save-temps" value="false"/>
       </C30Global>
       <ICD4Tool>
+        <property key="debugoptions.useswbreakpoints" value="true"/>
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="programmerToGoFilePath"
-                  value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_PuttingGate.X/debug/standalone/RGS_PuttingGate_ptg"/>
+                  value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_BringUp.X/debug/standalone/RGS_BringUp_ptg"/>
       </ICD4Tool>
       <Tool>
         <property key="ADC 1" value="true"/>
@@ -768,8 +770,8 @@
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="poweroptions.powerenable" value="false"/>
         <property key="programmerToGoFilePath"
-                  value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_PuttingGate.X/debug/standalone/RGS_PuttingGate_ptg"/>
-        <property key="programmerToGoImageName" value="RGS_PuttingGate_ptg"/>
+                  value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_BringUp.X/debug/standalone/RGS_BringUp_ptg"/>
+        <property key="programmerToGoImageName" value="RGS_BringUp_ptg"/>
         <property key="programoptions.donoteraseauxmem" value="false"/>
         <property key="programoptions.eraseb4program" value="true"/>
         <property key="programoptions.ledbrightness" value="5"/>
@@ -939,8 +941,8 @@
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="poweroptions.powerenable" value="false"/>
         <property key="programmerToGoFilePath"
-                  value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_PuttingGate.X/debug/standalone/RGS_PuttingGate_ptg"/>
-        <property key="programmerToGoImageName" value="RGS_PuttingGate_ptg"/>
+                  value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_BringUp.X/debug/standalone/RGS_BringUp_ptg"/>
+        <property key="programmerToGoImageName" value="RGS_BringUp_ptg"/>
         <property key="programoptions.donoteraseauxmem" value="false"/>
         <property key="programoptions.eraseb4program" value="true"/>
         <property key="programoptions.ledbrightness" value="5"/>

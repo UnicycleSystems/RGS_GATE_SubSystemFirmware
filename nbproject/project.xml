@@ -3,8 +3,8 @@
     <type>com.microchip.mplab.nbide.embedded.makeproject</type>
     <configuration>
         <data xmlns="http://www.netbeans.org/ns/make-project/1">
-            <name>RGS_PuttingGate</name>
-            <creation-uuid>2c15ff8c-1000-442f-8e19-da6bed4936f6</creation-uuid>
+            <name>RGS_BringUp</name>
+            <creation-uuid>a98d938f-cb2b-4560-9f34-37ac99ecd31d</creation-uuid>
             <make-project-type>0</make-project-type>
             <sourceEncoding>ISO-8859-1</sourceEncoding>
             <make-dep-projects/>

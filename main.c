@@ -25,6 +25,8 @@
 #define FCY 16000000UL  // or whatever your instruction clock is
 #include <libpic30.h>
 #include "pitchandroll.h"
+#include "firmware_version.h"
+#include "EEpromBlockLabels.h"
 
 
 //accelerometer specific stuff....
@@ -96,7 +98,7 @@ void (*Task[NUM_Tasks])(void)={GetAccel,GetBattVolts};
 
 #ifdef TestNewBattBoard
 #define NUM_Tasks 2
-void (*Task[NUM_Tasks])(void)={GetAccel,DummyTask};
+void (*Task[NUM_Tasks])(void)={GetAccel,GetAccel};
 #endif
 
 // these are the 'ticker' tasks, worked through once per second,
@@ -115,7 +117,7 @@ uint8_t TaskIndex;
 
 
 
-static uint8_t s_addr = LIS_ADDR_0;
+static uint8_t s_addr = LIS_ADDR_1;
 void LIS2DW12_SetAddress_I2C2(uint8_t addr) { s_addr = addr; }
 static bool i2c2_wait_done(volatile I2C2_MESSAGE_STATUS *st, uint16_t timeout_ms);
 static bool i2c2_write_u8(uint8_t dev7, uint8_t reg, uint8_t val);
@@ -348,12 +350,17 @@ int main(void)
     LastOnOff=0;
     uint32_t DebugTime;
   
-  // set the 'ticks per second
+  // set the 'ticks per second and other defaults.
+    
+   // in due course, add a bit of non-vol and init all at start up.
    
     EMULATE_EEPROM_Memory[4] = (uint8_t)(0x00);  // Most significant byte
     EMULATE_EEPROM_Memory[5] = (uint8_t)(0xF4);
     EMULATE_EEPROM_Memory[6] = (uint8_t)(0x24);
     EMULATE_EEPROM_Memory[7] = (uint8_t)(0x00);
+    
+    EMULATE_EEPROM_Memory[FirmwareVersionAddr] = FIRMWARE_REV_LSB;
+    EMULATE_EEPROM_Memory[FirmwareVersionAddr-1] = FIRMWARE_REV_MSB;
  
    // INTERRUPT_TO_JETSON_SetLow();
     RestoreDetect();
@@ -681,7 +688,7 @@ bool LIS2DW12_Init_I2C2(void)
 {
     EMULATE_EEPROM_Memory[30] = 0xA1;     // entered init
 
-    s_addr=0x19;
+    s_addr=0x18;
 
     EMULATE_EEPROM_Memory[31] = s_addr;
     
