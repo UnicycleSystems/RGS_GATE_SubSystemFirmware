@@ -243,10 +243,24 @@ static BQ_STATUS bq_df_write_word(uint16_t address, uint16_t value)
 
 /* ---------------- UART1 report helpers ---------------- */
 
+/* UART1_Write() spins on a full TX buffer without clearing the watchdog,
+ * which becomes a reset loop in the bootloadable build (WDT on, ~8.4 s).
+ * Wait for room ourselves, with a bound, and drop the report rather than
+ * let a stalled UART take the jig down. */
 static void bq_print(const char *s)
 {
     while (*s)
+    {
+        uint16_t guard = 0;
+        while (!UART1_IsTxReady())
+        {
+            if (++guard >= 10000)       /* ~100 ms at 10 us/spin */
+                return;
+            __delay32(FCY / 100000ul);  /* 10 us */
+            ClrWdt();
+        }
         UART1_Write((uint8_t)*s++);
+    }
 }
 
 static void bq_print_line(const char *s)

@@ -78,11 +78,31 @@ LDLIBSOPTIONS=
 # fixDeps replaces a bunch of sed/cat/printf statements that slow down the build
 FIXDEPS=fixDeps
 
+# The following macros may be used in the pre and post step lines
+_/_=\\
+ShExtension=.bat
+Device=PIC24FJ64GA004
+ProjectDir="C:\Projects_Firmware\RGS_BringUp.X"
+ProjectName=RGS_BringUp
+ConfName=standalone
+ImagePath="dist\standalone\${IMAGE_TYPE}\RGS_BringUp.X.${IMAGE_TYPE}.${OUTPUT_SUFFIX}"
+ImageDir="dist\standalone\${IMAGE_TYPE}"
+ImageName="RGS_BringUp.X.${IMAGE_TYPE}.${OUTPUT_SUFFIX}"
+ifeq ($(TYPE_IMAGE), DEBUG_RUN)
+IsDebug="true"
+else
+IsDebug="false"
+endif
+
 .build-conf:  ${BUILD_SUBPROJECTS}
 ifneq ($(INFORMATION_MESSAGE), )
 	@echo $(INFORMATION_MESSAGE)
 endif
 	${MAKE}  -f nbproject/Makefile-standalone.mk ${DISTDIR}/RGS_BringUp.X.${IMAGE_TYPE}.${OUTPUT_SUFFIX}
+	@echo "--------------------------------------"
+	@echo "User defined post-build step: [.${_/_}deployHex$(ShExtension) ${ProjectDir} ${ImageDir} ${ImageName} ${ConfName} ${IsDebug}]"
+	@.${_/_}deployHex$(ShExtension) ${ProjectDir} ${ImageDir} ${ImageName} ${ConfName} ${IsDebug}
+	@echo "--------------------------------------"
 
 MP_PROCESSOR_OPTION=24FJ64GA004
 MP_LINKER_FILE_OPTION=,--script=p24FJ64GA004.gld

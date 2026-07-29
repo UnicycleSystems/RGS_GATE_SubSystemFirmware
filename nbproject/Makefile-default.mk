@@ -93,8 +93,6 @@ IsDebug="true"
 else
 IsDebug="false"
 endif
-MDFUHostPath="C:\Users\peterbrewster\AppData\Roaming\mplab_ide\dev\v6.25\bin\windows\pymdfu-bin.exe"
-PYFWImageBuilderPath="C:\Users\peterbrewster\AppData\Roaming\mplab_ide\dev\v6.25\bin\windows\pyfwimagebuilder-bin.exe"
 
 .build-conf:  ${BUILD_SUBPROJECTS}
 ifneq ($(INFORMATION_MESSAGE), )
@@ -102,8 +100,8 @@ ifneq ($(INFORMATION_MESSAGE), )
 endif
 	${MAKE}  -f nbproject/Makefile-default.mk ${DISTDIR}/RGS_BringUp.X.${IMAGE_TYPE}.${OUTPUT_SUFFIX}
 	@echo "--------------------------------------"
-	@echo "User defined post-build step: [cd mcc_generated_files/boot && .${_/_}postBuild$(ShExtension) $(MP_CC_DIR) ${ProjectDir} ${ImageDir} ${ImageName} ${IsDebug} && cd ${ProjectDir}]"
-	@cd mcc_generated_files/boot && .${_/_}postBuild$(ShExtension) $(MP_CC_DIR) ${ProjectDir} ${ImageDir} ${ImageName} ${IsDebug} && cd ${ProjectDir}
+	@echo "User defined post-build step: [cd mcc_generated_files/boot && .${_/_}postBuild$(ShExtension) $(MP_CC_DIR) ${ProjectDir} ${ImageDir} ${ImageName} ${IsDebug} && cd ${ProjectDir} && .${_/_}deployHex$(ShExtension) ${ProjectDir} ${ImageDir} ${ImageName} ${ConfName} ${IsDebug}]"
+	@cd mcc_generated_files/boot && .${_/_}postBuild$(ShExtension) $(MP_CC_DIR) ${ProjectDir} ${ImageDir} ${ImageName} ${IsDebug} && cd ${ProjectDir} && .${_/_}deployHex$(ShExtension) ${ProjectDir} ${ImageDir} ${ImageName} ${ConfName} ${IsDebug}
 	@echo "--------------------------------------"
 
 MP_PROCESSOR_OPTION=24FJ64GA004
