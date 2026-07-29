@@ -84,6 +84,17 @@ typedef enum
     BQ_ERR_FET            /* FET_EN did not set */
 } BQ_STATUS;
 
+/* Tri-state on purpose: reading data flash needs ManufacturerBlockAccess,
+ * which a SEALED gauge refuses, so "cannot tell" must never be mistaken for
+ * "not provisioned". Treat UNKNOWN as "run the bring-up anyway" - every
+ * step of it is idempotent. */
+typedef enum
+{
+    BQ_PROV_UNKNOWN = 0,   /* could not read: bus failed, or gauge sealed */
+    BQ_PROV_NO,            /* read OK, factory/unprovisioned */
+    BQ_PROV_YES            /* read OK, already provisioned */
+} BQ_PROVISIONED;
+
 typedef enum
 {
     BQ_MODE_UNKNOWN = 0,
@@ -91,6 +102,10 @@ typedef enum
     BQ_MODE_UNSEALED,
     BQ_MODE_FULL_ACCESS
 } BQ_SEC_MODE;
+
+/* Cheap "has this pack been through the jig already?" test - one DF read.
+ * Lets the caller branch around BQ40Z50_BringUp() when there is nothing to do. */
+BQ_PROVISIONED BQ40Z50_IsProvisioned(void);
 
 /* Individual operations (each mirrors a proven bq40z50_setup.py function) */
 BQ_STATUS   BQ40Z50_Probe(uint16_t *device_type);

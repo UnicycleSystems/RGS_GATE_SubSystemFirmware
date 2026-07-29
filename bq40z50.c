@@ -363,6 +363,38 @@ BQ_STATUS BQ40Z50_Unseal(void)
     return BQ_ERR_SEALED;
 }
 
+/* Single-register provisioning test. DA Configuration (DF 0x4A7D) carries
+ * both markers this jig writes: CC1:CC0 = 4 cell, and NR = 1. A factory part
+ * reads 0x12 (3 cell, removable), so the low three bits being set is a
+ * reliable "already provisioned" signal. Masked rather than == 0x17 so the
+ * unrelated bits of that byte stay free to differ.
+ *
+ * Deliberately does NOT unseal or write anything - it is a read-only probe,
+ * cheap enough to run on every boot.
+ *
+ * Wakes the gauge first. DA Configuration leaves SLEEP enabled, so an idle
+ * gauge naps and NACKs whatever transaction wakes it - and a data flash read
+ * (ManufacturerBlockAccess) is the least forgiving kind to lead with. A plain
+ * SBS word read is legal in every state, so spend one on waking up before
+ * asking the real question. BringUp() opens the same way for the same reason. */
+volatile uint8_t bq_dbg_prov_da;        /* DA Config byte this check read */
+
+BQ_PROVISIONED BQ40Z50_IsProvisioned(void)
+{
+    uint8_t da = 0;
+    uint16_t wake = 0;
+
+    (void)bq_read_word(0x09, &wake);     /* SBS Voltage() - wake, result unused */
+    bq_delay_ms(BQ_T_CMD_MS);
+
+    if (bq_df_read_byte(BQ_DF_DA_CONFIGURATION, &da) != BQ_OK)
+        return BQ_PROV_UNKNOWN;
+
+    bq_dbg_prov_da = da;
+    return ((da & (BQ_DA_CELL_COUNT_4S | BQ_DA_NR)) ==
+            (BQ_DA_CELL_COUNT_4S | BQ_DA_NR)) ? BQ_PROV_YES : BQ_PROV_NO;
+}
+
 BQ_STATUS BQ40Z50_EnsureDAConfig(uint8_t *da_config_out)
 {
     uint8_t current, target, readback;

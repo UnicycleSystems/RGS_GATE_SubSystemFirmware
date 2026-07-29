@@ -59,60 +59,6 @@ void GetBattVolts(void);
 void GetAccel(void);
 void DummyTask(void);
 
-///Test functions switches
-
-
-
-
-// round robin tasks
-//only one of these should be active
-//#define Standard
-
-//only one of these should be active
-//#define Test1
-//#define Test2
-#define TestNewBattBoard
-
-
-
-// Task handler functions as needed, increment NUM_Tasks 
-#ifdef Test1
-#define NUM_Tasks 2
-void Test1PatternA(void);
-void Test1PatternB(void);
-void (*Task[NUM_Tasks])(void)={Test1PatternA,Test1PatternB};
-#endif
-
-#ifdef Test2
-#define NUM_Tasks 2
-void Test2PatternA(void);
-void Test2PatternB(void);
-void (*Task[NUM_Tasks])(void)={Test2PatternA,Test2PatternB};
-
-#endif
-
-
-#ifdef Standard
-#define NUM_Tasks 2
-void (*Task[NUM_Tasks])(void)={GetAccel,GetBattVolts};
-
-#endif
-
-#ifdef TestNewBattBoard
-#define NUM_Tasks 2
-void (*Task[NUM_Tasks])(void)={GetAccel,GetAccel};
-#endif
-
-// these are the 'ticker' tasks, worked through once per second,
-// rather than every pass of the loop.
-// executed in a 'round robin' , one task executed per second (approx)
-// time is based on TMR2 interrupt, sets 'DoTask ' flag.
-// so to add another task, just add a task handler, 
-// reference it in the array, below, and increment NUM_Tasks.
-//...oh.. and actually write the code that does the task!
-//void (*Task[NUM_Tasks])(void)={GetBattVolts,GetAccel};
-
-uint8_t TaskIndex;
 
 ////////////////////////////////////////////////
 
@@ -208,7 +154,7 @@ int main(void)
     SwitchState=0; 
     ButtonCount=0;
     PowerOff=false;
-    TaskIndex=0;
+   
      
     //This is a 
     EMULATE_EEPROM_Memory[128] = 0;  //This should cause both lasers off
@@ -285,10 +231,7 @@ int main(void)
     RCONbits.POR = 0;
     RCONbits.BOR = 0;
 
-  // #define RunPOST
-#ifdef RunPOST
-     POST_Routine();
-#endif
+
    
     
     FrontSensorOff;
@@ -311,6 +254,7 @@ int main(void)
   
     LightingUpdate=0;
     uint8_t bugout;
+    BQ_PROVISIONED prov;
   
     char LastOnOff;
     LedOn=0;
@@ -336,164 +280,64 @@ int main(void)
 
     /* --- BQ40Z50-R2 battery pack bring-up (report on UART1) --- */
     UART1_Initialize();
-    U1BRG = 0x22;            /* MCC file is 9600; 0x22 -> 115200 @ FCY 16 MHz, BRGH=1 */
+               
 
     /* BRING-UP JIG: repeat the report forever (green LED heartbeat between
      * runs) so a serial monitor attached at any time sees it within a few
      * seconds. The product main loop below is never reached. */
     while (1)
     {
-        BQ40Z50_BringUp();
-        for (bugout = 0; bugout < 50; bugout++)     /* ~5 s heartbeat */
+        
+            for (bugout = 0; bugout < 10; bugout++)     /* ~5 s heartbeat */
         {
             BI_LED_GREEN_Toggle();
-            __delay_ms(100);
+            BI_LED_RED_Toggle();
+            __delay_ms(500);
             ClrWdt();
         }
-        BI_LED_GREEN_SetHigh();
-    }
-  //  uint8_t id = 0x00;
+       /* Dark while working, so green means the VERDICT and nothing else.
+        * A visible dark period = the gauge was slow to answer. */
+       BI_LED_RED_SetLow();
+       BI_LED_GREEN_SetLow();
 
-  //BI_LED_RED_SetHigh();BI_LED_RED is RED!!!!!
-  BI_LED_GREEN_SetHigh(); //BI_LED_GREEN is green!!!!
-   for(bugout=0;bugout<10;bugout++)
-            {
-                //changes this to flashing red light
-                BI_LED_GREEN_Toggle();  
-                BI_LED_RED_Toggle();
-                __delay_ms(50); 
-                BI_LED_GREEN_Toggle();  
-                BI_LED_RED_Toggle();
-                __delay_ms(150); 
-                ClrWdt();
-                // restore green light
-                BI_LED_GREEN_SetHigh();//Turn on Green LED
-                BI_LED_RED_SetLow();//Turn off Red LED
-            }
-  
-//#define PWR_BUTT_LAUNCH_TEST
-    while(1)
-    {   
-       
-        
-       if(!POWER_BUTTON_GetValue())
-#ifdef  PWR_BUTT_LAUNCH_TEST
-            LaunchTest();
-#else
-         
-             PowerDown();
-#endif
-          if(DoTask) //this is set periodically by the TMR2 interrupt. Nominally 1 second.
-             {
-              if(SelfResetTimeout)
-              {
-                if(!SelfResetTimeout--)
-                    CancelReset();
-              }
-                
-             
-              DoTask=0; // clear it straight away, it will re set in due course! 
-                Task[TaskIndex](); 
-                TaskIndex++;
-                if(TaskIndex>=NUM_Tasks)
-                    TaskIndex=0;  
+       prov = BQ40Z50_IsProvisioned();
+       if (prov != BQ_PROV_YES)
+       {
+           BQ40Z50_BringUp();
+           prov = BQ40Z50_IsProvisioned();   /* verify it actually took */
+       }
 
-             }
- //----------------------------------
-// -- check to see if an i2c 'write' - ie job load is pending             
-        if(EventJob.i2cQueJobWaiting)
-        {
-            if(I2C_WriteQueue_Pop(&LoadJobFromEEprom)) 
-            {
-                if(!JobQueue_Push(LoadJobFromEEprom.start_address))
-                   queuepanic=1;
-                
-            }
-            
-        }    
-//------------------------------------
+       /* Park showing the verdict. All THREE outcomes get their own pattern:
+        * BQ_PROV_UNKNOWN means the read failed (flaky bus, or a gauge that
+        * would not wake), NOT that the pack is good - showing it as a pass
+        * would let an unprovisioned pack ship on a single bad transaction.
+        *
+        *   solid green            - provisioned, verified
+        *   red flashing           - definitively NOT provisioned
+        *   green/red alternating  - could not verify; retry or investigate
+        */
+       BI_LED_GREEN_SetHigh();
+       BI_LED_RED_SetLow();
+       while (1)
+       {
+           if (prov == BQ_PROV_NO)
+           {
+               BI_LED_GREEN_SetLow();
+               BI_LED_RED_Toggle();
+           }
+           else if (prov != BQ_PROV_YES)     /* BQ_PROV_UNKNOWN */
+           {
+               BI_LED_GREEN_Toggle();
+               BI_LED_RED_Toggle();
+           }
+           __delay_ms(150);
+           ClrWdt();
+       }
+    }                       /* jig loop: never exits */
 
-//------------------------------------
-//-- check and do if a job is waiting  
-    if(EventJob.JobWaiting) 
-    {
-      JobQueue_Pop();  
-    }        
-            
-       //add power bit...
-        if (LedOn)
-        {
-            if(FrontSense)
-            { 
-             BI_LED_RED_SetHigh();   //Red LED on        
-           //  LOCAL_STATUS_LED_SetHigh();
-             BI_LED_GREEN_SetLow();//green LED off
-            FrontSense=0;
-            }
-            
-            if(RearSense)
-            {
-                
-               // LOCAL_STATUS_LED_SetLow();
-                EMULATE_EEPROM_Memory[0] = (uint8_t)(TransitTime >> 24);  // Most significant byte
-                EMULATE_EEPROM_Memory[1] = (uint8_t)(TransitTime >> 16);
-                EMULATE_EEPROM_Memory[2] = (uint8_t)(TransitTime>> 8);
-                EMULATE_EEPROM_Memory[3] = (uint8_t)(TransitTime);  
-                RearSense=0;
-                CallJetsonBall();
-                // wait a bit....
-                // turn off red light, turn on green light
-                RestoreDetect();
-                TMR2_Start();
-                BI_LED_RED_SetLow();   //Red LED off       
-           //  LOCAL_STATUS_LED_SetHigh();
-             BI_LED_GREEN_SetHigh();//green LED on    
-            }
-            LedOn=0;
-        }
-        
-        if(GateTimeout)
-        {   
-            BI_LED_RED_SetLow(); 
-            BI_LED_GREEN_SetHigh();//green LED off      
-
-            DebugTime=TransitTime;
-            EMULATE_EEPROM_Memory[0] = 255;  // Most significant byte
-            EMULATE_EEPROM_Memory[1] = 254;
-            EMULATE_EEPROM_Memory[2] = 253;
-            EMULATE_EEPROM_Memory[3] = 252; 
-            CallJetsonBall();
-            GateTimeout=0;
-            //Just flashes on board LED, make this external indicator
-            for(bugout=0;bugout<10;bugout++)
-            {
-                //changes this to flashing red light
-                BI_LED_GREEN_Toggle();  
-                BI_LED_RED_Toggle();
-                __delay_ms(50); 
-                BI_LED_GREEN_Toggle();  
-                BI_LED_RED_Toggle();
-                __delay_ms(150); 
-                ClrWdt();
-                // restore green light
-                BI_LED_GREEN_SetHigh();//Turn on Green LED
-                BI_LED_RED_SetLow();//Turn off Red LED
-            }
-            
-            GateTimeout=0;
-            FrontSense=0;
-            RearSense=0;
-            TMR4_Initialize ();
-            RestoreDetect();
-            TMR2_Start();
-                      
-        }
- 
-    }
-} 
-
-
-///End of int main(void)    
+    return 0;
+}
+///End of int main(void)
 
 
 ///functions, TBD other headers etc
@@ -510,8 +354,7 @@ void CallJetsonBall(void)
  //   BALL_DETECT_INT_SetLow();
   //  __delay_ms(10);  
 }
-#define powerdowntest
-#ifdef powerdowntest
+
 void CallJetsonJob(void)
 {
     FrontSensorOff;
@@ -544,14 +387,14 @@ void CallJetsonJob(void)
    
     while(!JETSON_HEARTBEAT_GetValue())
     {
-        __delay_ms(100);
+        __delay_ms(100);  
         ClrWdt();
         BI_LED_GREEN_Toggle();
     };
        
        RestoreDetect();
 }
-#endif
+
 
 
 
