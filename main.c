@@ -266,47 +266,12 @@ int main(void)
      * Safety: HOLD_PWR is only released when the charger DEFINITELY reads
      * present (RA7 == 0). Any other reading falls through to run-and-stay-
      * latched, so a misread can never strand a battery boot dead. */
-    if (!warmBoot)
-    {
-        if (DEBUG_IN_GetValue() == 0)      /* /ACOK low -> charger present */
-        {
-            bool charged;
-            charged = 0;
-            HOLD_PWR_SetLow();             /* charger holds the rail; unplug-while-idle -> off */
-
-            while(POWER_BUTTON_GetValue()) /* wait for a button press to power on */
-            {
-                ClrWdt();
-                if(!charged)
-                {
-                 RED_LED_ON_SetHigh();
-                __delay_ms(5);
-                RED_LED_ON_SetLow();
-                __delay_ms(1000);
-                }
-
-                if(VER_0_GetValue())
-                {
-                    charged=1;
-                    BI_LED_GREEN_SetHigh();//Turn on Green LED
-                    BI_LED_RED_SetLow();//Turn off Red LED
-                }
-                else
-                {
-                    charged=0;
-                   BI_LED_RED_SetHigh();//Turn off Red LED
-                    BI_LED_GREEN_SetLow();//Turn on Green LED
-                }
-            }
-            // button pressed: take ownership of our own supply and power on
-            RED_LED_ON_SetLow();
-            HOLD_PWR_SetHigh();
-            while(!PowerButton(On))//wait for a 'power on' press and hold to complete
-                ClrWdt();
-        }
-        /* else: no charger -> battery button-boot -> HOLD_PWR already high,
-         * fall straight through to running. Single press. */
-    }
+    /* BRING-UP JIG: the product's cold-start charger loop (release HOLD_PWR,
+     * charge-indicate, wait for a power-button press-and-hold) is bypassed.
+     * A provisioning jig must power straight up and run unconditionally, and
+     * must never release HOLD_PWR - on the pack bench there may be no charger
+     * holding the rail, so releasing it powers the board off. HOLD_PWR is
+     * already latched high above; fall straight through to running. */
     /* Both paths are now "powered and running": show green. */
     BI_LED_GREEN_SetHigh();//Turn on Green LED
     BI_LED_RED_SetLow();//Turn off Red LED
@@ -372,7 +337,21 @@ int main(void)
     /* --- BQ40Z50-R2 battery pack bring-up (report on UART1) --- */
     UART1_Initialize();
     U1BRG = 0x22;            /* MCC file is 9600; 0x22 -> 115200 @ FCY 16 MHz, BRGH=1 */
-    BQ40Z50_BringUp();
+
+    /* BRING-UP JIG: repeat the report forever (green LED heartbeat between
+     * runs) so a serial monitor attached at any time sees it within a few
+     * seconds. The product main loop below is never reached. */
+    while (1)
+    {
+        BQ40Z50_BringUp();
+        for (bugout = 0; bugout < 50; bugout++)     /* ~5 s heartbeat */
+        {
+            BI_LED_GREEN_Toggle();
+            __delay_ms(100);
+            ClrWdt();
+        }
+        BI_LED_GREEN_SetHigh();
+    }
   //  uint8_t id = 0x00;
 
   //BI_LED_RED_SetHigh();BI_LED_RED is RED!!!!!

@@ -22,6 +22,12 @@
 #define BQ_T_DF_WRITE_MS   200
 #define BQ_T_PENDING_MAX   5000     /* 100 us ticks -> 500 ms bus timeout */
 
+/* A gauge waking from SLEEP can NACK the transaction that wakes it, so
+ * every bus operation is retried (per the MCC driver's own guidance for
+ * busy slaves). */
+#define BQ_RETRY_MAX       5
+#define BQ_T_RETRY_MS      10
+
 /* MAC block responses: 1 count byte + 2 echo bytes + up to 32 data bytes */
 #define BQ_BLOCK_RAW_MAX   37
 
@@ -36,42 +42,63 @@ static void bq_delay_ms(uint16_t ms)
 
 /* ---------------- SMBus transport ---------------- */
 
+/* Debugger aid: final I2C2_MESSAGE_STATUS of the most recent transaction.
+ * 0=FAIL 1=PENDING(timed out) 2=COMPLETE 3=STUCK_START 4=ADDRESS_NO_ACK
+ * 5=DATA_NO_ACK 6=LOST_STATE */
+volatile uint8_t bq_last_i2c_status;
+
 static bool bq_wait(volatile I2C2_MESSAGE_STATUS *status)
 {
     uint16_t t;
     for (t = 0; *status == I2C2_MESSAGE_PENDING; t++)
     {
         if (t >= BQ_T_PENDING_MAX)
-            return false;
+            break;
         __delay32(FCY / 10000ul);   /* 100 us */
         ClrWdt();
     }
+    bq_last_i2c_status = (uint8_t)*status;
     return (*status == I2C2_MESSAGE_COMPLETE);
 }
 
-/* Plain write of raw bytes to the gauge */
+/* Plain write of raw bytes to the gauge, with wake/busy retries */
 static bool bq_write(uint8_t *data, uint8_t len)
 {
-    volatile I2C2_MESSAGE_STATUS status = I2C2_MESSAGE_PENDING;
-    I2C2_MasterWrite(data, len, BQ40Z50_I2C_ADDRESS, (I2C2_MESSAGE_STATUS *)&status);
-    return bq_wait(&status);
+    uint8_t attempt;
+
+    for (attempt = 0; attempt < BQ_RETRY_MAX; attempt++)
+    {
+        volatile I2C2_MESSAGE_STATUS status = I2C2_MESSAGE_PENDING;
+        I2C2_MasterWrite(data, len, BQ40Z50_I2C_ADDRESS, (I2C2_MESSAGE_STATUS *)&status);
+        if (bq_wait(&status))
+            return true;
+        bq_delay_ms(BQ_T_RETRY_MS);
+    }
+    return false;
 }
 
 /* SBS word read: write [cmd], repeated-start read 2 bytes */
 static bool bq_read_word(uint8_t cmd, uint16_t *value)
 {
-    I2C2_TRANSACTION_REQUEST_BLOCK trb[2];
-    volatile I2C2_MESSAGE_STATUS status = I2C2_MESSAGE_PENDING;
-    uint8_t buf[2];
+    uint8_t attempt;
 
-    I2C2_MasterWriteTRBBuild(&trb[0], &cmd, 1, BQ40Z50_I2C_ADDRESS);
-    I2C2_MasterReadTRBBuild(&trb[1], buf, 2, BQ40Z50_I2C_ADDRESS);
-    I2C2_MasterTRBInsert(2, trb, (I2C2_MESSAGE_STATUS *)&status);
-    if (!bq_wait(&status))
-        return false;
+    for (attempt = 0; attempt < BQ_RETRY_MAX; attempt++)
+    {
+        I2C2_TRANSACTION_REQUEST_BLOCK trb[2];
+        volatile I2C2_MESSAGE_STATUS status = I2C2_MESSAGE_PENDING;
+        uint8_t buf[2];
 
-    *value = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
-    return true;
+        I2C2_MasterWriteTRBBuild(&trb[0], &cmd, 1, BQ40Z50_I2C_ADDRESS);
+        I2C2_MasterReadTRBBuild(&trb[1], buf, 2, BQ40Z50_I2C_ADDRESS);
+        I2C2_MasterTRBInsert(2, trb, (I2C2_MESSAGE_STATUS *)&status);
+        if (bq_wait(&status))
+        {
+            *value = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+            return true;
+        }
+        bq_delay_ms(BQ_T_RETRY_MS);
+    }
+    return false;
 }
 
 /* SBS word write: [cmd, lo, hi] */
@@ -115,12 +142,11 @@ static bool bq_mac_block_write(const uint8_t *payload, uint8_t len)
 static BQ_STATUS bq_mac_block_read(uint16_t subcmd, uint8_t *out,
                                    uint8_t out_max, uint8_t *out_len)
 {
-    I2C2_TRANSACTION_REQUEST_BLOCK trb[2];
-    volatile I2C2_MESSAGE_STATUS status = I2C2_MESSAGE_PENDING;
     uint8_t cmd = BQ_CMD_MANUFACTURER_BLOCK_ACCESS;
     uint8_t raw[BQ_BLOCK_RAW_MAX];
     uint8_t sub[2];
-    uint8_t count, n;
+    uint8_t count, n, attempt;
+    bool done = false;
 
     sub[0] = (uint8_t)(subcmd & 0xFF);
     sub[1] = (uint8_t)(subcmd >> 8);
@@ -128,10 +154,19 @@ static BQ_STATUS bq_mac_block_read(uint16_t subcmd, uint8_t *out,
         return BQ_ERR_I2C;
     bq_delay_ms(BQ_T_CMD_MS);
 
-    I2C2_MasterWriteTRBBuild(&trb[0], &cmd, 1, BQ40Z50_I2C_ADDRESS);
-    I2C2_MasterReadTRBBuild(&trb[1], raw, BQ_BLOCK_RAW_MAX, BQ40Z50_I2C_ADDRESS);
-    I2C2_MasterTRBInsert(2, trb, (I2C2_MESSAGE_STATUS *)&status);
-    if (!bq_wait(&status))
+    for (attempt = 0; attempt < BQ_RETRY_MAX && !done; attempt++)
+    {
+        I2C2_TRANSACTION_REQUEST_BLOCK trb[2];
+        volatile I2C2_MESSAGE_STATUS status = I2C2_MESSAGE_PENDING;
+
+        I2C2_MasterWriteTRBBuild(&trb[0], &cmd, 1, BQ40Z50_I2C_ADDRESS);
+        I2C2_MasterReadTRBBuild(&trb[1], raw, BQ_BLOCK_RAW_MAX, BQ40Z50_I2C_ADDRESS);
+        I2C2_MasterTRBInsert(2, trb, (I2C2_MESSAGE_STATUS *)&status);
+        done = bq_wait(&status);
+        if (!done)
+            bq_delay_ms(BQ_T_RETRY_MS);
+    }
+    if (!done)
         return BQ_ERR_I2C;
 
     count = raw[0];
@@ -173,6 +208,34 @@ static BQ_STATUS bq_df_write_byte(uint16_t address, uint8_t value)
     payload[1] = (uint8_t)(address >> 8);
     payload[2] = value;
     if (!bq_mac_block_write(payload, 3))
+        return BQ_ERR_I2C;
+    bq_delay_ms(BQ_T_DF_WRITE_MS);
+    return BQ_OK;
+}
+
+static BQ_STATUS bq_df_read_word(uint16_t address, uint16_t *value)
+{
+    uint8_t buf[32];
+    uint8_t len = 0;
+    BQ_STATUS st = bq_mac_block_read(address, buf, sizeof(buf), &len);
+
+    if (st != BQ_OK)
+        return st;
+    if (len < 2)
+        return BQ_ERR_I2C;
+    *value = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+    return BQ_OK;
+}
+
+static BQ_STATUS bq_df_write_word(uint16_t address, uint16_t value)
+{
+    uint8_t payload[4];
+
+    payload[0] = (uint8_t)(address & 0xFF);
+    payload[1] = (uint8_t)(address >> 8);
+    payload[2] = (uint8_t)(value & 0xFF);
+    payload[3] = (uint8_t)(value >> 8);
+    if (!bq_mac_block_write(payload, 4))
         return BQ_ERR_I2C;
     bq_delay_ms(BQ_T_DF_WRITE_MS);
     return BQ_OK;
@@ -346,6 +409,77 @@ BQ_STATUS BQ40Z50_EnableFETs(uint32_t *op_status_out)
     return BQ_OK;
 }
 
+/* BENCH ONLY: no thermistors fitted on prototype packs, so the factory
+ * Temperature Enable (TS1+TS2) reads open inputs as frozen and latches
+ * under-temperature protection (SafetyStatus[UTD]), holding DSG off.
+ * Point the gauge at its internal die sensor instead - protections then
+ * work from a real temperature. Rewrite for production thermistors. */
+BQ_STATUS BQ40Z50_EnsureTempConfigBench(void)
+{
+    uint8_t v;
+    BQ_STATUS st = bq_df_read_byte(BQ_DF_TEMPERATURE_ENABLE, &v);
+
+    if (st != BQ_OK)
+        return st;
+    if (v != BQ_TEMP_ENABLE_BENCH)
+    {
+        st = bq_df_write_byte(BQ_DF_TEMPERATURE_ENABLE, BQ_TEMP_ENABLE_BENCH);
+        if (st != BQ_OK)
+            return st;
+        st = bq_df_read_byte(BQ_DF_TEMPERATURE_ENABLE, &v);
+        if (st != BQ_OK)
+            return st;
+        if (v != BQ_TEMP_ENABLE_BENCH)
+            return BQ_ERR_DF_VERIFY;
+    }
+
+    st = bq_df_read_byte(BQ_DF_TEMPERATURE_MODE, &v);
+    if (st != BQ_OK)
+        return st;
+    if (v != BQ_TEMP_MODE_BENCH)
+    {
+        st = bq_df_write_byte(BQ_DF_TEMPERATURE_MODE, BQ_TEMP_MODE_BENCH);
+        if (st != BQ_OK)
+            return st;
+        st = bq_df_read_byte(BQ_DF_TEMPERATURE_MODE, &v);
+        if (st != BQ_OK)
+            return st;
+        if (v != BQ_TEMP_MODE_BENCH)
+            return BQ_ERR_DF_VERIFY;
+    }
+    return BQ_OK;
+}
+
+/* Guarantee the FETs stay enabled across gauge resets AND the eventual seal
+ * command: both reload ManufacturingStatus from data flash Mfg Status Init
+ * (0x4600). MAC 0x0022 is documented to copy FET_EN there when unsealed,
+ * but this verifies it and writes the bit explicitly if the copy is not
+ * present. */
+BQ_STATUS BQ40Z50_EnsureFETPersist(uint16_t *mfg_init_out)
+{
+    uint16_t init, readback;
+    BQ_STATUS st = bq_df_read_word(BQ_DF_MFG_STATUS_INIT, &init);
+
+    if (st != BQ_OK)
+        return st;
+    if (mfg_init_out != NULL)
+        *mfg_init_out = init;
+    if (init & BQ_MFG_FET_EN)
+        return BQ_OK;
+
+    st = bq_df_write_word(BQ_DF_MFG_STATUS_INIT, init | BQ_MFG_FET_EN);
+    if (st != BQ_OK)
+        return st;
+    st = bq_df_read_word(BQ_DF_MFG_STATUS_INIT, &readback);
+    if (st != BQ_OK)
+        return st;
+    if (!(readback & BQ_MFG_FET_EN))
+        return BQ_ERR_DF_VERIFY;
+    if (mfg_init_out != NULL)
+        *mfg_init_out = readback;
+    return BQ_OK;
+}
+
 BQ_STATUS BQ40Z50_ReadCellVoltages(uint16_t mv[4])
 {
     static const uint8_t cmds[4] = { BQ_CMD_CELL_VOLTAGE_1, BQ_CMD_CELL_VOLTAGE_2,
@@ -371,6 +505,21 @@ BQ_STATUS BQ40Z50_Seal(void)
 
 /* ---------------- Bring-up sequence ---------------- */
 
+/* Debugger breadcrumbs: watch these by name with the serial port dead.
+ * bq_dbg_step: 1=entered 2=SBS voltage read OK 3=probe OK 4=unsealed
+ *              5=DA config OK 6=FETs OK 7=cells read OK 8=complete */
+volatile uint8_t  bq_dbg_step;
+volatile uint8_t  bq_dbg_result;        /* BQ_STATUS of last completed run */
+volatile uint16_t bq_dbg_pack_mv;       /* SBS Voltage() 0x09 - works even SEALED */
+volatile uint16_t bq_dbg_cell1_mv;      /* SBS CellVoltage1 0x3F - works even SEALED */
+volatile uint16_t bq_dbg_device_type;
+volatile uint16_t bq_dbg_mfg_init;      /* DF 0x4600 - bit 4 set = FETs persist */
+volatile uint8_t  bq_dbg_da_config;     /* DF 0x4A7D readback (expect 0x17) */
+volatile uint32_t bq_dbg_op_status;     /* bit1 DSG, bit2 CHG, bit13 XDSG, bit14 XCHG */
+volatile uint32_t bq_dbg_safety_status; /* nonzero = protection active */
+volatile uint32_t bq_dbg_pf_status;     /* nonzero = permanent fail latched */
+volatile uint16_t bq_dbg_temp_01K;      /* SBS Temperature(), 0.1 K (2950 = 22 C) */
+
 static const char *bq_mode_name(BQ_SEC_MODE mode)
 {
     switch (mode)
@@ -391,60 +540,172 @@ BQ_STATUS BQ40Z50_BringUp(void)
     uint8_t i;
     BQ_STATUS st;
 
+    BQ_STATUS worst = BQ_OK;   /* first error seen; steps keep going anyway */
+
+    bq_dbg_step = 1;
+    bq_dbg_result = 0xFF;
+    bq_last_i2c_status = 0xEE;  /* distinguish "never ran" from MESSAGE_FAIL(0) */
+
     bq_print_line("");
     bq_print_line("BQ40Z50 bring-up:");
 
+    /* SBS sanity first: plain word reads are legal in ALL security modes and
+     * never touch ManufacturerBlockAccess. If these fail, the problem is
+     * transport/electrical, not sealing. */
+    {
+        uint16_t v = 0;
+        if (bq_read_word(0x09, &v))            /* SBS Voltage(), mV */
+        {
+            bq_dbg_pack_mv = v;
+            if (bq_read_word(BQ_CMD_CELL_VOLTAGE_1, &v))
+                bq_dbg_cell1_mv = v;
+            bq_dbg_step = 2;
+            bq_print("  SBS Voltage: ");
+            bq_print_u16(bq_dbg_pack_mv);
+            bq_print_line(" mV");
+        }
+        else
+        {
+            bq_print_line("  ** SBS WORD READ FAILED (transport) **");
+            bq_dbg_result = BQ_ERR_I2C;
+            return BQ_ERR_I2C;
+        }
+    }
+
     st = BQ40Z50_Probe(&device_type);
+    if (st != BQ_OK)
+    {
+        /* A SEALED gauge rejects ManufacturerBlockAccess (0x44) outright
+         * (data NACK), so the probe cannot even ask its security mode. The
+         * unseal keys are plain ManufacturerAccess (0x00) word writes, which
+         * SEALED mode accepts - send them blind and probe again. Harmless if
+         * the part was already unsealed (unknown MAC words are ignored). */
+        bq_print_line("  Probe rejected - assuming SEALED, sending unseal keys");
+        bq_mac_command(BQ_UNSEAL_KEY_WORD1);
+        bq_mac_command(BQ_UNSEAL_KEY_WORD2);
+        bq_delay_ms(100);
+        st = BQ40Z50_Probe(&device_type);
+    }
+    bq_dbg_device_type = device_type;
     bq_print("  Device type: ");
     bq_print_hex(device_type, 4);
     bq_print_line(st == BQ_OK ? "" : "  ** PROBE FAILED **");
     if (st != BQ_OK)
+    {
+        bq_dbg_result = (uint8_t)st;
         return st;
+    }
+    bq_dbg_step = 3;
 
+    /* Once per jig boot: reset the gauge to drop any latched FUSE drive or
+     * stale protection state left from before provisioning (a latched FUSE
+     * holds every FET off even with SafetyStatus clear). All our settings
+     * reload from data flash, so the reset costs nothing. Safe on the bench:
+     * the board is not powered through the pack FETs. */
+    {
+        static bool gauge_reset_done = false;
+        if (!gauge_reset_done)
+        {
+            gauge_reset_done = true;
+            bq_print_line("  Device reset (clearing latched FUSE/protections)...");
+            bq_mac_command(BQ_MAC_DEVICE_RESET);
+            bq_delay_ms(2000);      /* gauge re-init */
+        }
+    }
+
+    /* From here on, every step is idempotent and attempted regardless of
+     * earlier failures: on this bench the bus drops out intermittently, so
+     * aborting a run throws away progress. Each step lands whenever it gets
+     * a clean window; 'worst' carries the first error for the caller. */
     bq_print("  Security mode: ");
     bq_print_line(bq_mode_name(BQ40Z50_SecurityMode()));
     st = BQ40Z50_Unseal();
     if (st != BQ_OK)
     {
-        bq_print_line("  ** UNSEAL FAILED (non-default key?) **");
-        return st;
+        bq_print_line("  ** UNSEAL FAILED **");
+        if (worst == BQ_OK) worst = st;
     }
+    else
+        bq_dbg_step = 4;
 
     st = BQ40Z50_EnsureDAConfig(&da_config);
+    bq_dbg_da_config = da_config;
     bq_print("  DA Configuration: ");
     bq_print_hex(da_config, 2);
     bq_print_line(st == BQ_OK ? " (4 cell, NR)" : "  ** DF WRITE FAILED **");
     if (st != BQ_OK)
-        return st;
+    {
+        if (worst == BQ_OK) worst = st;
+    }
+    else
+        bq_dbg_step = 5;
+
+    st = BQ40Z50_EnsureTempConfigBench();
+    bq_print(st == BQ_OK ? "  Temp source: internal (bench, no thermistors)"
+                         : "  ** TEMP CONFIG FAILED **");
+    bq_print_line("");
+    if (st != BQ_OK && worst == BQ_OK)
+        worst = st;
+    {
+        uint16_t t01k = 0;
+        if (bq_read_word(0x08, &t01k))       /* SBS Temperature(), 0.1 K */
+            bq_dbg_temp_01K = t01k;
+    }
 
     st = BQ40Z50_EnableFETs(&op);
     if (st != BQ_OK)
     {
         bq_print_line("  ** FET ENABLE FAILED **");
-        return st;
+        if (worst == BQ_OK) worst = st;
     }
-    bq_print("  FETs: CHG=");
-    bq_print((op & BQ_OP_CHG) ? "on" : "off");
-    bq_print(" DSG=");
-    bq_print((op & BQ_OP_DSG) ? "on" : "off");
-    bq_print(" PCHG=");
-    bq_print_line((op & BQ_OP_PCHG) ? "on" : "off");
-    if (!(op & BQ_OP_CHG) || !(op & BQ_OP_DSG))
+    else
     {
-        BQ40Z50_ReadMAC32(BQ_MAC_SAFETY_STATUS, &safety);
-        bq_print("  Note: FET held off, OperationStatus=");
-        bq_print_hex(op, 8);
-        bq_print(" SafetyStatus=");
-        bq_print_hex(safety, 8);
-        bq_print_line("");
+        bq_dbg_step = 6;
+        bq_dbg_op_status = op;
+        bq_print("  FETs: CHG=");
+        bq_print((op & BQ_OP_CHG) ? "on" : "off");
+        bq_print(" DSG=");
+        bq_print((op & BQ_OP_DSG) ? "on" : "off");
+        bq_print(" PCHG=");
+        bq_print_line((op & BQ_OP_PCHG) ? "on" : "off");
+        if (!(op & BQ_OP_CHG) || !(op & BQ_OP_DSG))
+        {
+            uint32_t pf = 0;
+            if (BQ40Z50_ReadMAC32(BQ_MAC_SAFETY_STATUS, &safety) == BQ_OK)
+                bq_dbg_safety_status = safety;
+            if (BQ40Z50_ReadMAC32(0x0053, &pf) == BQ_OK)   /* PFStatus */
+                bq_dbg_pf_status = pf;
+            bq_print("  Note: FET held off, OperationStatus=");
+            bq_print_hex(op, 8);
+            bq_print(" SafetyStatus=");
+            bq_print_hex(safety, 8);
+            bq_print(" PFStatus=");
+            bq_print_hex(pf, 8);
+            bq_print_line("");
+        }
+    }
+
+    {
+        uint16_t mfg_init = 0;
+        st = BQ40Z50_EnsureFETPersist(&mfg_init);
+        if (st == BQ_OK)
+            bq_dbg_mfg_init = mfg_init;
+        bq_print("  Mfg Status Init: ");
+        bq_print_hex(mfg_init, 4);
+        bq_print_line(st == BQ_OK ? " (FET_EN persistent)"
+                                  : "  ** FET PERSIST FAILED **");
+        if (st != BQ_OK && worst == BQ_OK)
+            worst = st;
     }
 
     st = BQ40Z50_ReadCellVoltages(mv);
     if (st != BQ_OK)
     {
         bq_print_line("  ** CELL VOLTAGE READ FAILED **");
-        return st;
+        bq_dbg_result = (uint8_t)((worst == BQ_OK) ? st : worst);
+        return (worst == BQ_OK) ? st : worst;
     }
+    bq_dbg_step = 7;
     total = 0;
     for (i = 0; i < 4; i++)
     {
@@ -459,6 +720,10 @@ BQ_STATUS BQ40Z50_BringUp(void)
     bq_print_u16((uint16_t)total);
     bq_print_line(" mV");
 
-    bq_print_line("BQ40Z50 bring-up complete.");
-    return BQ_OK;
+    bq_print_line(worst == BQ_OK ? "BQ40Z50 bring-up complete."
+                                 : "BQ40Z50 bring-up finished WITH ERRORS.");
+    if (worst == BQ_OK)
+        bq_dbg_step = 8;
+    bq_dbg_result = (uint8_t)worst;
+    return worst;
 }

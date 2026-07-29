@@ -32,6 +32,7 @@
 #define BQ_MAC_DEVICE_TYPE        0x0001
 #define BQ_MAC_FET_CONTROL        0x0022  /* toggles ManufacturingStatus[FET_EN] */
 #define BQ_MAC_SEAL_DEVICE        0x0030
+#define BQ_MAC_DEVICE_RESET       0x0041
 #define BQ_MAC_SAFETY_STATUS      0x0051
 #define BQ_MAC_OPERATION_STATUS   0x0054
 #define BQ_MAC_MANUFACTURING_STATUS 0x0057
@@ -55,6 +56,19 @@
 
 /* Data flash */
 #define BQ_DF_DA_CONFIGURATION    0x4A7D  /* 1 byte */
+#define BQ_DF_MFG_STATUS_INIT     0x4600  /* 2 bytes; power-up/seal-time
+                                             ManufacturingStatus source -
+                                             FET_EN here = FETs persistently
+                                             enabled (TRM 15.3.1) */
+#define BQ_DF_TEMPERATURE_ENABLE  0x4A7B  /* 1 byte; bit0 TSint, bits1-4 TS1-4 */
+#define BQ_DF_TEMPERATURE_MODE    0x4A7C  /* 1 byte; per-sensor cell/FET select */
+
+/* BENCH ONLY - no thermistors fitted: internal die sensor as the sole
+ * (cell) temperature source, so under/over-temp protections see a real
+ * temperature instead of an open TS input reading "frozen" (UTD trip).
+ * Packs with real thermistors need these rewritten to match the design. */
+#define BQ_TEMP_ENABLE_BENCH      0x01    /* TSint only */
+#define BQ_TEMP_MODE_BENCH        0x00    /* everything = cell temperature */
 #define BQ_DA_CELL_COUNT_MASK     0x03
 #define BQ_DA_CELL_COUNT_4S       0x03    /* CC1:CC0 = 1,1 = 4 cell */
 #define BQ_DA_NR                  (1u << 2) /* non-removable: ignore PRES pin */
@@ -84,6 +98,8 @@ BQ_SEC_MODE BQ40Z50_SecurityMode(void);
 BQ_STATUS   BQ40Z50_Unseal(void);
 BQ_STATUS   BQ40Z50_EnsureDAConfig(uint8_t *da_config_out);
 BQ_STATUS   BQ40Z50_EnableFETs(uint32_t *op_status_out);
+BQ_STATUS   BQ40Z50_EnsureFETPersist(uint16_t *mfg_init_out);
+BQ_STATUS   BQ40Z50_EnsureTempConfigBench(void);
 BQ_STATUS   BQ40Z50_ReadCellVoltages(uint16_t mv[4]);
 BQ_STATUS   BQ40Z50_ReadMAC32(uint16_t subcmd, uint32_t *value);
 BQ_STATUS   BQ40Z50_Seal(void);   /* production end step - not called by BringUp yet */
