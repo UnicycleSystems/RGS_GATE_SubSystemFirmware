@@ -20,7 +20,10 @@
  * control loop. */
 #define BQ_T_CMD_MS        10
 #define BQ_T_DF_WRITE_MS   200
-#define BQ_T_PENDING_MAX   5000     /* 100 us ticks -> 500 ms bus timeout */
+/* 100 us ticks. A whole transaction at 50 kHz is ~1 ms and the SMBus slave
+ * bus-timeout is 35 ms max, so 100 ms is ample headroom while still failing
+ * fast enough that retries stay responsive. */
+#define BQ_T_PENDING_MAX   1000
 
 /* A gauge waking from SLEEP can NACK the transaction that wakes it, so
  * every bus operation is retried (per the MCC driver's own guidance for
@@ -61,6 +64,142 @@ static bool bq_wait(volatile I2C2_MESSAGE_STATUS *status)
     return (*status == I2C2_MESSAGE_COMPLETE);
 }
 
+volatile uint16_t bq_dbg_bus_recoveries;   /* how often the bus needed resetting */
+
+/* Guard: the unwedge verifies itself with a real read, and a failing read
+ * escalates to an unwedge - without this they would recurse. It also marks
+ * recoveries as "expected settling" rather than genuine bus faults. */
+static bool bq_in_unwedge = false;
+
+/* Did the last failure leave the bus/driver broken, as opposed to the slave
+ * simply answering "no"? A clean NACK means the transaction ran to completion
+ * and the driver is healthy - retrying immediately is fine. A timeout, FAIL,
+ * stuck start or lost state means the peripheral never finished. */
+static bool bq_needs_recovery(void)
+{
+    switch (bq_last_i2c_status)
+    {
+        case I2C2_MESSAGE_PENDING:   /* our timeout fired: TRB still queued */
+        case I2C2_MESSAGE_FAIL:
+        case I2C2_STUCK_START:
+        case I2C2_LOST_STATE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* Recover after a wedged transaction. Critically, when our timeout fires the
+ * abandoned TRB is still owned by the MCC driver: left alone, successive
+ * retries fill its queue, it reports "full", and then EVERY later transaction
+ * fails instantly - one bad transaction poisoning the whole run (observed as
+ * i2c=1 followed by a string of i2c=0).
+ *
+ * I2C2_Initialize() clears the queue and the state machine and re-inits the
+ * peripheral (preserving the 50 kHz BRG). The delay then allows a slave that
+ * is holding the line down its SMBus bus-timeout period (25-35 ms per spec)
+ * to release by itself. */
+static void bq_bus_recover(void)
+{
+    /* Don't count settling inside the unwedge itself: its verification read
+     * routinely needs a second attempt just after the bus has been poked, and
+     * counting that would make "Bus resets" non-zero on every healthy run,
+     * hiding the real wedges it exists to report. */
+    if (!bq_in_unwedge)
+        bq_dbg_bus_recoveries++;
+    I2C2_Initialize();
+    bq_delay_ms(50);
+}
+
+/* Bounded spin on a self-clearing I2C2CON bit. Returns false if the bus is
+ * so stuck that the bit never clears, which is the one case where poking the
+ * peripheral by hand could otherwise hang us. */
+static bool bq_wait_bit_clear(volatile uint16_t *reg, uint16_t mask)
+{
+    uint16_t t;
+
+    for (t = 0; (*reg & mask) != 0; t++)
+    {
+        if (t >= 2000)              /* ~20 ms at 10 us/spin */
+            return false;
+        __delay32(FCY / 100000ul);  /* 10 us */
+        ClrWdt();
+    }
+    return true;
+}
+
+volatile uint8_t bq_dbg_unwedge_result;   /* 0=not run 2=bus usable after 3=still unusable */
+
+static bool bq_read_word(uint8_t cmd, uint16_t *value);   /* defined below */
+
+bool BQ40Z50_BusUnwedge(void)
+{
+    uint16_t dummy = 0;
+    uint8_t i;
+    bool usable;
+
+    bq_in_unwedge = true;
+
+    /* Known-good peripheral state; also drops any TRB the MCC driver still
+     * thinks it owns. */
+    I2C2_Initialize();
+    bq_delay_ms(5);
+
+    /* Clock a slave through the rest of its byte and STOP. RCEN is only
+     * actioned while the master is in a transaction, so a START must come
+     * first - without it the bit never self-clears (which is what made the
+     * first version of this always report failure).
+     *
+     * Every step is best-effort: if a line really is held, some of these will
+     * time out, and that is fine - we care about the clocks that DO get out,
+     * not about completing a tidy transaction. */
+    I2C2CONbits.SEN = 1;
+    (void)bq_wait_bit_clear(&I2C2CON, 1u << 0);             /* SEN */
+
+    for (i = 0; i < 9; i++)
+    {
+        I2C2CONbits.RCEN = 1;                               /* 8 clocks */
+        if (!bq_wait_bit_clear(&I2C2CON, 1u << 3))           /* RCEN */
+            break;
+        (void)I2C2RCV;                                      /* discard */
+
+        I2C2CONbits.ACKDT = 1;                              /* NACK */
+        I2C2CONbits.ACKEN = 1;
+        if (!bq_wait_bit_clear(&I2C2CON, 1u << 4))           /* ACKEN */
+            break;
+    }
+
+    I2C2CONbits.PEN = 1;                                    /* STOP -> idle */
+    (void)bq_wait_bit_clear(&I2C2CON, 1u << 2);             /* PEN */
+
+    I2C2_Initialize();
+    bq_delay_ms(5);
+
+    /* Judge success by whether the bus can actually carry a transaction, not
+     * by how the peripheral's control bits behaved - that is the only test
+     * that means anything to the caller. Voltage() is legal in every gauge
+     * security mode, so it is a fair probe. */
+    usable = bq_read_word(0x09, &dummy);
+    bq_dbg_unwedge_result = usable ? 2 : 3;
+    bq_in_unwedge = false;
+    return usable;
+}
+
+/* Between retries: reset only when the bus actually needs it. Escalates to a
+ * full unwedge, because a slave holding SDA is exactly the case a peripheral
+ * reset alone cannot fix - and that is the failure we actually see. */
+static void bq_retry_pause(void)
+{
+    if (bq_needs_recovery())
+    {
+        bq_bus_recover();
+        if (!bq_in_unwedge)                 /* never recurse into ourselves */
+            (void)BQ40Z50_BusUnwedge();
+    }
+    else
+        bq_delay_ms(BQ_T_RETRY_MS);
+}
+
 /* Plain write of raw bytes to the gauge, with wake/busy retries */
 static bool bq_write(uint8_t *data, uint8_t len)
 {
@@ -72,7 +211,7 @@ static bool bq_write(uint8_t *data, uint8_t len)
         I2C2_MasterWrite(data, len, BQ40Z50_I2C_ADDRESS, (I2C2_MESSAGE_STATUS *)&status);
         if (bq_wait(&status))
             return true;
-        bq_delay_ms(BQ_T_RETRY_MS);
+        bq_retry_pause();
     }
     return false;
 }
@@ -96,7 +235,7 @@ static bool bq_read_word(uint8_t cmd, uint16_t *value)
             *value = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
             return true;
         }
-        bq_delay_ms(BQ_T_RETRY_MS);
+        bq_retry_pause();
     }
     return false;
 }
@@ -164,7 +303,7 @@ static BQ_STATUS bq_mac_block_read(uint16_t subcmd, uint8_t *out,
         I2C2_MasterTRBInsert(2, trb, (I2C2_MESSAGE_STATUS *)&status);
         done = bq_wait(&status);
         if (!done)
-            bq_delay_ms(BQ_T_RETRY_MS);
+            bq_retry_pause();
     }
     if (!done)
         return BQ_ERR_I2C;
@@ -772,4 +911,126 @@ BQ_STATUS BQ40Z50_BringUp(void)
         bq_dbg_step = 8;
     bq_dbg_result = (uint8_t)worst;
     return worst;
+}
+
+/* ---------------- Status report ---------------- */
+
+/* Read-only snapshot for main() to call on any pass. Each item is reported
+ * independently: on this bus a single transaction can fail without the rest
+ * being unavailable, and "read failed" against one line is far more useful
+ * than losing the whole report. */
+/* Report WHY a read failed, so the serial log is self-diagnosing without a
+ * debugger attached. Codes are I2C2_MESSAGE_STATUS: 0=FAIL 1=timed out
+ * 2=COMPLETE 3=STUCK_START 4=ADDRESS_NO_ACK 5=DATA_NO_ACK 6=LOST_STATE. */
+static void bq_print_fail(void)
+{
+    bq_print("read failed (i2c=");
+    bq_print_u16((uint16_t)bq_last_i2c_status);
+    bq_print_line(")");
+}
+
+void BQ40Z50_ReportStatus(void)
+{
+    uint16_t v = 0;
+    uint16_t mv[4];
+    uint32_t op = 0;
+    uint32_t total;
+    int16_t  tenthsC;
+    uint8_t  da = 0;
+    uint8_t  i;
+    bool     awake;
+
+    /* Wake first: a napping gauge NACKs whatever transaction rouses it, and
+     * a plain SBS read is legal in every security mode. Voltage() is also the
+     * simplest possible read, so its result tells us whether the bus works at
+     * all before any of the heavier transactions are attempted. */
+    awake = bq_read_word(0x09, &v);
+    bq_delay_ms(BQ_T_CMD_MS);
+
+    bq_print_line("");
+    bq_print_line("BQ40Z50 status:");
+
+    bq_print("  Voltage   : ");
+    if (awake)
+    {
+        bq_print_u16(v);
+        bq_print_line(" mV");
+    }
+    else
+        bq_print_fail();
+
+    bq_print("  DA Config : ");
+    if (bq_df_read_byte(BQ_DF_DA_CONFIGURATION, &da) == BQ_OK)
+    {
+        bq_dbg_da_config = da;
+        bq_print_hex(da, 2);
+        bq_print((da & BQ_DA_CELL_COUNT_MASK) == BQ_DA_CELL_COUNT_4S
+                 ? "  4 cell" : "  NOT 4 cell");
+        bq_print_line((da & BQ_DA_NR) ? ", non-removable" : ", REMOVABLE");
+    }
+    else
+        bq_print_fail();
+
+    bq_print("  FETs      : ");
+    if (BQ40Z50_ReadMAC32(BQ_MAC_OPERATION_STATUS, &op) == BQ_OK)
+    {
+        bq_dbg_op_status = op;
+        bq_print("CHG=");
+        bq_print((op & BQ_OP_CHG) ? "on" : "off");
+        bq_print(" DSG=");
+        bq_print((op & BQ_OP_DSG) ? "on" : "off");
+        bq_print(" PCHG=");
+        bq_print((op & BQ_OP_PCHG) ? "on" : "off");
+        bq_print("   OperationStatus=");
+        bq_print_hex(op, 8);
+        bq_print_line("");
+    }
+    else
+        bq_print_fail();
+
+    bq_print("  Temp      : ");
+    if (bq_read_word(0x08, &v))          /* SBS Temperature(), 0.1 K */
+    {
+        bq_dbg_temp_01K = v;
+        tenthsC = (int16_t)((int16_t)v - 2732);   /* 0.1 K -> 0.1 degC */
+        if (tenthsC < 0)
+        {
+            bq_print("-");
+            tenthsC = (int16_t)(-tenthsC);
+        }
+        bq_print_u16((uint16_t)(tenthsC / 10));
+        bq_print(".");
+        bq_print_u16((uint16_t)(tenthsC % 10));
+        bq_print_line(" C");
+    }
+    else
+        bq_print_fail();
+
+    if (BQ40Z50_ReadCellVoltages(mv) == BQ_OK)
+    {
+        total = 0;
+        for (i = 0; i < 4; i++)
+        {
+            total += mv[i];
+            bq_print("  Cell ");
+            bq_print_u16((uint16_t)(i + 1));
+            bq_print("    : ");
+            bq_print_u16(mv[i]);
+            bq_print_line(" mV");
+        }
+        bq_print("  Pack sum  : ");
+        bq_print_u16((uint16_t)total);
+        bq_print_line(" mV");
+    }
+    else
+        { bq_print("  Cells     : "); bq_print_fail(); }
+
+    /* Non-zero means the bus wedged and had to be reset - worth knowing even
+     * when every read above succeeded, since it is the early warning. */
+    if (bq_dbg_bus_recoveries != 0)
+    {
+        bq_print("  Bus resets: ");
+        bq_print_u16(bq_dbg_bus_recoveries);
+        bq_print_line("");
+    }
 }

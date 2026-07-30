@@ -7,6 +7,6 @@
  * the Jetson's EEPROM interface (main.c publishes these bytes); the product
  * app in RGS_PuttingGate.X keeps major rev 0. */
 #define FIRMWARE_REV_MSB        0
-#define FIRMWARE_REV_LSB        2
+#define FIRMWARE_REV_LSB        3
 
 #endif /* FIRMWARE_VERSION_H */

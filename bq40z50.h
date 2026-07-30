@@ -119,6 +119,25 @@ BQ_STATUS   BQ40Z50_ReadCellVoltages(uint16_t mv[4]);
 BQ_STATUS   BQ40Z50_ReadMAC32(uint16_t subcmd, uint32_t *value);
 BQ_STATUS   BQ40Z50_Seal(void);   /* production end step - not called by BringUp yet */
 
+/* Free the I2C2 bus from a slave stuck mid-byte holding SDA low.
+ *
+ * Needed because the pack FETs stay latched on, so the 3V3 rail and every
+ * device on I2C2 keep their power through a PIC reset or a reflash. A plain
+ * I2C device (the GPIO port expander) has no SMBus bus-timeout, so once it is
+ * knocked out of sync it holds SDA down indefinitely and the condition
+ * SURVIVES restarts - resetting our own peripheral cannot clear it. The cure
+ * is to clock the slave through the rest of its byte and then STOP.
+ *
+ * Call at start-up before any gauge access. Returns true if the bus looks
+ * usable afterwards. Safe to call when the bus is already healthy. */
+bool        BQ40Z50_BusUnwedge(void);
+
+/* Print a status snapshot on UART1: DA Configuration, FET states,
+ * temperature and cell voltages. Read-only and self-contained - safe to call
+ * from main() on any pass, whether or not bring-up ran. Individual reads that
+ * fail are reported as such rather than aborting the report. */
+void        BQ40Z50_ReportStatus(void);
+
 /* Full bring-up sequence: probe -> unseal -> DA config -> FETs -> voltages.
  * Progress and results are reported as text on UART1. Returns the first
  * error encountered, BQ_OK if the pack came up fully. */

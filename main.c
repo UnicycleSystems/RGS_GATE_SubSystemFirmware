@@ -101,6 +101,9 @@ void PWM_RB11_Enable(void);
 void PWM_RB11_Disable(void);
 void PWM_RB11_SetDuty(uint8_t duty);
 
+
+void WDT_SafeDelay10thSecs (uint8_t seconds_10th);
+
  uint8_t testval;
  
 // power management
@@ -112,6 +115,51 @@ bool queuepanic;
 
 I2C_WriteJob_t LoadJobFromEEprom;
 uint8_t JobIndex;
+
+
+/* Minimal UART1 string writer. UART1_Write() spins on a full TX buffer with
+ * no ClrWdt(), which would be a reset loop in the bootloadable build, so wait
+ * for room here instead - bounded, and give up rather than hang. */
+/* Wait for two-speed start-up to hand over to the crystal.
+ *
+ * IESO = ON means the device begins executing on the FRC, and with
+ * CLKDIV RCDIV = FRC/2 that is FCY ~2 MHz instead of 16 MHz - everything
+ * derived from FCY is 8x wrong until the 32 MHz crystal is stable, including
+ * U1BRG (115200 becomes ~14.3 kbaud, which is why the greeting used to arrive
+ * as a handful of garbage characters). CLOCK_Initialize() sets NOSC = PRI but
+ * never waits for the switch, so do it here.
+ *
+ * OSCCON COSC reads 0b010 once the primary oscillator is the active source.
+ * Bounded, so a dead crystal degrades to "runs slowly" rather than hanging. */
+static void wait_for_primary_clock(void)
+{
+    uint16_t t;
+
+    for (t = 0; OSCCONbits.COSC != 0b010; t++)
+    {
+        if (t >= 20000)             /* generous: crystal start-up is ~1-10 ms */
+            return;
+        Nop();
+        ClrWdt();
+    }
+}
+
+
+static void uart_puts(const char *s)
+{
+    while (*s)
+    {
+        uint16_t guard = 0;
+        while (!UART1_IsTxReady())
+        {
+            if (++guard >= 10000)       /* ~100 ms at 10 us/spin */
+                return;
+            __delay32(FCY / 100000ul);  /* 10 us */
+            ClrWdt();
+        }
+        UART1_Write((uint8_t)*s++);
+    }
+}
 
 
 int main(void)
@@ -143,6 +191,12 @@ int main(void)
     }
 
     SYSTEM_Initialize();
+
+    /* Two-speed start-up leaves us on the FRC at ~1/8 speed until the crystal
+     * is ready. Nothing that depends on FCY - UART baud, I2C timing, delays -
+     * is trustworthy before this returns. */
+    wait_for_primary_clock();
+
     REAR_LASER_PWM_SetHigh();
     FRONT_LASER_PWM_SetHigh();
 
@@ -254,12 +308,13 @@ int main(void)
   
     LightingUpdate=0;
     uint8_t bugout;
+    uint8_t reportTick;
     BQ_PROVISIONED prov;
   
     char LastOnOff;
     LedOn=0;
     LastOnOff=0;
-    uint32_t DebugTime;
+
   
   // set the 'ticks per second and other defaults.
     
@@ -276,11 +331,30 @@ int main(void)
    // INTERRUPT_TO_JETSON_SetLow();
     RestoreDetect();
    
-    LIS2DW12_Init_I2C2();    // TODO: should ensure it inits, or returns an error
+   // LIS2DW12_Init_I2C2();    // TODO: should ensure it inits, or returns an error
 
     /* --- BQ40Z50-R2 battery pack bring-up (report on UART1) --- */
+
+    /* U1TX is RC4, and PIN_MANAGER_Initialize() drove LATC = 0, so the TX line
+     * sits LOW until the UART is enabled - a break condition. The receiver
+     * reads the low-to-idle transition as framing errors, which is why the
+     * greeting arrived as garbage ("Hu5UB") while everything later was clean.
+     * uart1.c's own header says to set the TX latch high before init. */
+    LATCbits.LATC4 = 1;
+    __delay_ms(2);                  /* let the line settle at idle */
     UART1_Initialize();
-               
+    __delay_ms(2);
+    uart_puts("\r\nRGS BringUp jig: hello\r\n");
+     BEAM_SetHigh();
+
+    /* Free the bus before the first gauge access. The pack FETs stay latched
+     * on, so every I2C2 device keeps its power through a PIC reset - a plain
+     * I2C slave left holding SDA stays stuck across restarts until something
+     * clocks it out, which is why the fault used to persist run after run. */
+    if (BQ40Z50_BusUnwedge())
+        uart_puts("I2C2 bus unwedge: ok\r\n");
+    else
+        uart_puts("I2C2 bus unwedge: BUS STILL STUCK\r\n");
 
     /* BRING-UP JIG: repeat the report forever (green LED heartbeat between
      * runs) so a serial monitor attached at any time sees it within a few
@@ -318,23 +392,145 @@ int main(void)
         */
        BI_LED_GREEN_SetHigh();
        BI_LED_RED_SetLow();
+       
+       BQ40Z50_ReportStatus();
+       reportTick = 0;
        while (1)
        {
            if (prov == BQ_PROV_NO)
            {
                BI_LED_GREEN_SetLow();
-               BI_LED_RED_Toggle();
+               BI_LED_RED_SetHigh();
            }
            else if (prov != BQ_PROV_YES)     /* BQ_PROV_UNKNOWN */
            {
-               BI_LED_GREEN_Toggle();
-               BI_LED_RED_Toggle();
+               BI_LED_GREEN_SetHigh();
+               BI_LED_RED_SetHigh();
            }
            __delay_ms(150);
            ClrWdt();
+
+           /* Re-report every ~5 s so a serial monitor attached at any time
+            * sees the pack state within seconds, rather than having to catch
+            * the one-shot report at power-up. */
+          
+          
+           
+           
+       
+       uart_puts("\r\nGreen = good, red = bad, amber = don't know\r\n");
+      uart_puts("\r\n***************************************\r\n"); 
+      WDT_SafeDelay10thSecs(5);
+      uart_puts("\r\n************* switch on 5V  ******\r\n"); 
+      JETSON_5V_ON_SetHigh();
+      uart_puts("\r\nCheck ...Front Laser On........??\r\n");
+      FRONT_LASER_PWM_SetLow();
+      WDT_SafeDelay10thSecs(20);
+       uart_puts("\r\nCheck ...Front Laser Off........??\r\n");
+      FRONT_LASER_PWM_SetHigh();
+      WDT_SafeDelay10thSecs(20);
+        uart_puts("\r\nCheck ...Rear Laser On........??\r\n");
+      REAR_LASER_PWM_SetLow();
+      WDT_SafeDelay10thSecs(20);
+       uart_puts("\r\nCheck ...Rear Laser Off........??\r\n");
+      REAR_LASER_PWM_SetHigh();
+      WDT_SafeDelay10thSecs(20);
+       uart_puts("\r\nCheck ...Ball detect beam on........??\r\n");
+       BEAM_SetLow();
+       WDT_SafeDelay10thSecs(20);
+       uart_puts("\r\nCheck ...Ball detect beam off........??\r\n");
+       BEAM_SetHigh();
+       WDT_SafeDelay10thSecs(20);
+       uart_puts("\r\nCheck ...Check both IR lights ON.......??\r\n");
+       PWM_IR_SetHigh();
+       WDT_SafeDelay10thSecs(20);
+       uart_puts("\r\nCheck ...Check both IR lights OFF.......??\r\n");
+       
+      
+       uart_puts("\r\n***********************************\r\n");
+       uart_puts("\r\n********Auto mated tests complete****\r\n");
+       
+        uart_puts("\r\n*******Manual beam break tests****\r\n");
+        uart_puts("\r\n***   Break each beam in turn,   ****\r\n");
+        uart_puts("\r\n***   Verify corresponding laser comes on   ****\r\n");
+        uart_puts("\r\n***Simultaneously break both beams to exit  ****\r\n");
+        BEAM_SetLow();
+        while(1)
+        {
+            ClrWdt();
+            if(!(FRONT_BALL_SENSE_GetValue()))
+            {
+                uart_puts("\r\n***   Front Beam broken? ****\r\n");
+                FRONT_LASER_PWM_SetLow();
+            }
+               
+            else
+            {
+                FRONT_LASER_PWM_SetHigh();
+              
+               
+            }
+            
+            if(!(REAR_BALL_SENSE_GetValue()))
+            {
+               REAR_LASER_PWM_SetLow();
+                uart_puts("\r\n***   Rear Beam broken? ****\r\n"); 
+            }
+            else
+            {
+                REAR_LASER_PWM_SetHigh();   
+            }
+            
+            if( (!(FRONT_BALL_SENSE_GetValue())) && (!(REAR_BALL_SENSE_GetValue())))
+                break;
+            
+                
+        }
+       REAR_LASER_PWM_SetHigh(); 
+        FRONT_LASER_PWM_SetHigh();
+        
+       uart_puts("\r\n*******Tests Complete****\r\n");
+
+      /* Park: keep displaying the pack verdict, and offer a way out.
+       * PowerDown() requires a qualifying ~900 ms hold (flashing the LEDs as
+       * feedback while it counts), then drops the Jetson rail and releases
+       * HOLD_PWR. If something external is still holding the rail up it forces
+       * a reset rather than leaving us latched-but-idle. A short press is
+       * ignored, so this cannot power off by accident. */
+       if (prov == BQ_PROV_NO)
+          {
+              BI_LED_GREEN_SetLow();
+              BI_LED_RED_SetHigh();
+          }
+          else if (prov != BQ_PROV_YES)      /* BQ_PROV_UNKNOWN */
+          {
+              BI_LED_GREEN_SetHigh();
+              BI_LED_RED_SetHigh();
+          } 
+       
+      while(1)
+      {
+          
+          if (!POWER_BUTTON_GetValue())      /* active low */
+          {
+              PowerDown();
+              /* Returned: hold was too short. Restore the verdict display,
+               * since PowerButton() borrowed the LEDs while counting. */
+              BI_LED_GREEN_SetHigh();
+              BI_LED_RED_SetLow();
+          }
+          BI_LED_GREEN_SetHigh();
+          BQ40Z50_ReportStatus();
+          WDT_SafeDelay10thSecs(30);
+          __delay_ms(150);
+          ClrWdt();
+      }
+
        }
     }                       /* jig loop: never exits */
 
+    
+    
     return 0;
 }
 ///End of int main(void)
@@ -567,7 +763,7 @@ static bool lis_probe_addr(uint8_t addr)
 
 void QuickAcellerometerGrabber(void)
 {
-    uint8_t AddressStart;
+  
     int16_t pitch;
     int16_t roll;
     
@@ -641,7 +837,8 @@ void PowerDown(void)
               RCONbits.EXTR = 1;
               RCONbits.POR=1;
               RCONbits.BOR=1;
-              asm("reset");  
+              while(1)
+                  ClrWdt();
             }
         }
        
@@ -786,49 +983,18 @@ void GetAccel(void)
 
 
 
-#ifdef Test1
-void Test1PatternA(void)
-{
-  BI_LED_RED_SetHigh();//Turn on Red LED
-  BI_LED_GREEN_SetLow();//Turn off Green LED
-  FRONT_LASER_PWM_SetHigh();
-  REAR_LASER_PWM_SetHigh();
-}
-void Test1PatternB(void)
-{
-  BI_LED_RED_SetLow();//Turn off Red LED
-  BI_LED_GREEN_SetLow();//Turn off Green LED
-  FRONT_LASER_PWM_SetLow();
-  REAR_LASER_PWM_SetLow(); 
-}
 
-
-#endif
-
-#ifdef Test2
-void Test2PatternA(void)
-{
-  BI_LED_RED_SetLow();//Turn on Red LED
-  BI_LED_GREEN_SetHigh();//Turn off Green LED
-  FRONT_LASER_PWM_SetHigh();
-  REAR_LASER_PWM_SetLow(); 
-   BEAM_Toggle(); 
-    
-}
-void Test2PatternB(void)
-{
-  BI_LED_RED_SetLow();//Turn on Red LED
-  BI_LED_GREEN_SetLow();//Turn off Green LED
-  FRONT_LASER_PWM_SetLow();
-  REAR_LASER_PWM_SetHigh(); 
-  BEAM_Toggle();  
-    
-}
-#endif
-
-
-void DummyTask(void)
-{
-    return;
-}
  
+
+// delays for x 10ths of a second
+void WDT_SafeDelay10thSecs (uint8_t seconds_10th)
+{
+  
+    uint8_t smallcount;
+    
+    for (smallcount=0;smallcount<seconds_10th;smallcount++)
+      {
+          __delay_ms(100);
+          ClrWdt();
+      }
+}
