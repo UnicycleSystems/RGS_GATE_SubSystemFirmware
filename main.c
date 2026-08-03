@@ -41,15 +41,7 @@ int main(void)
         HOLD_PWR_SetDigitalOutput();
         HOLD_PWR_SetHigh();                 /* always: stay alive */
         JETSON_5V_ON_SetDigitalOutput();
-        /* Jetson 5V: ON only on a WARM boot (POR==0) -- a live update /
-         * handoff, where the Jetson is up and must survive the reset. On a
-         * COLD boot (POR==1: genuine power-on or plug-in) leave it OFF so the
-         * app's charge-indication state stays Jetson-dark until the user
-         * powers up with the button. */
-        if (RCONbits.POR == 0)
-            JETSON_5V_ON_SetHigh();
-        else
-            JETSON_5V_ON_SetLow();
+        JETSON_5V_ON_SetHigh();             /* always power the Jetson while in the bootloader */
     if (RCONbits.SWR && boot_handoff_magic == BOOT_HANDOFF_MAGIC)
     {
         boot_handoff_magic = 0;          /* consume: never replay */
@@ -61,11 +53,8 @@ int main(void)
 
     // Take the power pins as early as possible after reset.
     // HOLD_PWR: always latch our own supply on.
-    // JETSON_5V_ON: ONLY keep the Jetson powered if it is the one calling
-    // (JETSON_CALLING high = live update session; the Jetson is up and must
-    // survive the reset). On a cold button boot the Jetson rail must stay
-    // OFF: switching that load on while running from the button's momentary
-    // power path causes an inrush brown-out reset loop (~5-10Hz flicker).
+    // JETSON_5V_ON: always powered while in the bootloader (needed for cold
+    // bring-up and to keep the Jetson alive across an update reset).
 
 
     SYSTEM_Initialize();
@@ -74,12 +63,7 @@ int main(void)
     HOLD_PWR_SetDigitalOutput();
     HOLD_PWR_SetHigh();
     JETSON_5V_ON_SetDigitalOutput();
-    /* same rule as the early grab: warm keeps the Jetson alive, cold leaves
-     * it dark for the charge state. */
-    if (RCONbits.POR == 0)
-        JETSON_5V_ON_SetHigh();
-    else
-        JETSON_5V_ON_SetLow();
+    JETSON_5V_ON_SetHigh();             /* always power the Jetson while in the bootloader */
     FRONT_LASER_PWM_SetDigitalOutput();
     REAR_LASER_PWM_SetDigitalOutput();
     
