@@ -44,6 +44,7 @@
 #define BQ_UNSEAL_KEY_WORD2       0x3672
 
 /* ManufacturingStatus bits */
+#define BQ_MFG_GAUGE_EN           (1u << 3)   /* Impedance Track gas gauging */
 #define BQ_MFG_FET_EN             (1u << 4)
 
 /* OperationStatus bits (32-bit) */
@@ -62,6 +63,43 @@
                                              enabled (TRM 15.3.1) */
 #define BQ_DF_TEMPERATURE_ENABLE  0x4A7B  /* 1 byte; bit0 TSint, bits1-4 TS1-4 */
 #define BQ_DF_TEMPERATURE_MODE    0x4A7C  /* 1 byte; per-sensor cell/FET select */
+
+#define BQ_DF_DESIGN_CAPACITY_MAH 0x48E5  /* 2 bytes, mAh */
+#define BQ_DF_DESIGN_CAPACITY_CWH 0x48E7  /* 2 bytes, centi-Wh */
+#define BQ_DF_DESIGN_VOLTAGE      0x48E9  /* 2 bytes, mV */
+
+/* ===================================================================
+ * PACK-SPECIFIC VALUES - SET THESE FOR THE RGS PACK
+ * ===================================================================
+ * Left at 0 = "not configured": the golden image skips those entries and
+ * says so, rather than writing a plausible-looking wrong number.
+ *
+ * Design Capacity is what state-of-charge is computed against, so gas
+ * gauging (GAUGE_EN) is deliberately NOT enabled until it is set - a gauge
+ * running against the factory 4400 mAh default would report SOC that is
+ * confidently wrong, which is worse than reporting none.
+ *
+ * cWh = capacity in centi-watt-hours = (mAh x Design Voltage mV) / 100000.
+ * For 4 series cells, Design Voltage is nominal cell voltage x 4
+ * (3600 mV x 4 = 14400 mV for typical Li-ion).
+ */
+/* 4S1P: series cells raise voltage, not capacity, so pack capacity is the
+ * single-cell figure. (If the pack is ever built with parallel pairs this
+ * must double.) */
+#define BQ_PACK_DESIGN_CAPACITY_MAH   2500
+
+/* ASSUMPTION: 3.6 V nominal per cell x 4 = 14400 mV, which is also TI's own
+ * 4-series default. Change to 14800 if these cells are specified at 3.7 V
+ * nominal - it shifts the energy figure below by ~3%. */
+#define BQ_PACK_DESIGN_VOLTAGE_MV     14400
+
+/* Energy = mAh x mV / 100000, in centi-watt-hours: 2500 x 14400 / 100000 */
+#define BQ_PACK_DESIGN_CAPACITY_CWH   360
+
+/* Protection thresholds (CUV 0x493C, COV 0x4946.., OCC 0x4964, OCD 0x496D,
+ * OT/UT 0x4982..0x4996) are deliberately NOT in the golden image yet. TI's
+ * defaults assume generic 4.2 V Li-ion; they must be set from the cell
+ * datasheet before this jig is trusted to release packs. */
 
 /* BENCH ONLY - no thermistors fitted: internal die sensor as the sole
  * (cell) temperature source, so under/over-temp protections see a real
@@ -102,6 +140,16 @@ typedef enum
     BQ_MODE_UNSEALED,
     BQ_MODE_FULL_ACCESS
 } BQ_SEC_MODE;
+
+/* ---- Golden image -------------------------------------------------
+ * The curated set of data-flash settings that define an RGS pack. Verify is
+ * read-only and returns how many entries differ; Apply writes only what is
+ * wrong and re-reads each one to confirm. Entries left unconfigured (see the
+ * pack-specific block above) are skipped and counted separately, so an
+ * incomplete image can never masquerade as a verified one. */
+BQ_STATUS   BQ40Z50_VerifyGoldenImage(uint8_t *mismatches, uint8_t *unset);
+BQ_STATUS   BQ40Z50_ApplyGoldenImage(void);
+void        BQ40Z50_ReportGoldenImage(void);
 
 /* Cheap "has this pack been through the jig already?" test - one DF read.
  * Lets the caller branch around BQ40Z50_BringUp() when there is nothing to do. */

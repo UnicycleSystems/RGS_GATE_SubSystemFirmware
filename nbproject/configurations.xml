@@ -312,9 +312,15 @@
                   value="${communication.interface.default}"/>
         <property key="communication.interface.jtag" value="2wire"/>
         <property key="communication.speed" value="${communication.speed.default}"/>
+        <property key="debugoptions.debug-startup" value="Use system settings"/>
+        <property key="debugoptions.reset-behaviour" value="Use system settings"/>
         <property key="debugoptions.simultaneous.debug" value="false"/>
         <property key="debugoptions.useswbreakpoints" value="false"/>
+        <property key="event.recorder.debugger.behavior" value="Running"/>
+        <property key="event.recorder.enabled" value="false"/>
+        <property key="event.recorder.scvd.files" value=""/>
         <property key="hwtoolclock.frcindebug" value="false"/>
+        <property key="lastid" value=""/>
         <property key="memories.aux" value="false"/>
         <property key="memories.bootflash" value="true"/>
         <property key="memories.configurationmemory" value="true"/>
@@ -622,7 +628,7 @@
         <targetDevice>PIC24FJ64GA004</targetDevice>
         <targetHeader></targetHeader>
         <targetPluginBoard></targetPluginBoard>
-        <platformTool>ICD4Tool</platformTool>
+        <platformTool>pk4hybrid</platformTool>
         <languageToolchain>XC16</languageToolchain>
         <languageToolchainVersion>2.10</languageToolchainVersion>
         <platform>3</platform>
@@ -937,7 +943,7 @@
                   value="${memories.instruction.ram.ranges}"/>
         <property key="memories.programmemory" value="true"/>
         <property key="memories.programmemory.ranges" value="0-abfb"/>
-        <property key="poweroptions.powerenable" value="false"/>
+        <property key="poweroptions.powerenable" value="true"/>
         <property key="programmerToGoFilePath"
                   value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_BringUp.X/debug/standalone/RGS_BringUp_ptg"/>
         <property key="programmerToGoImageName" value="RGS_BringUp_ptg"/>
@@ -1083,7 +1089,8 @@
         <property key="UART 1" value="true"/>
         <property key="UART 2" value="true"/>
         <property key="communication.activationmode" value="nohv"/>
-        <property key="communication.interface" value=""/>
+        <property key="communication.interface"
+                  value="${communication.interface.default}"/>
         <property key="communication.interface.jtag" value="2wire"/>
         <property key="communication.speed" value="${communication.speed.default}"/>
         <property key="debugoptions.debug-startup" value="Use system settings"/>
@@ -1108,9 +1115,7 @@
                   value="${memories.instruction.ram.ranges}"/>
         <property key="memories.programmemory" value="true"/>
         <property key="memories.programmemory.ranges" value="0-abfb"/>
-        <property key="poweroptions.powerenable" value="false"/>
-        <property key="programmerToGoFilePath"
-                  value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_BringUp.X/debug/standalone/RGS_BringUp_ptg"/>
+        <property key="poweroptions.powerenable" value="true"/>
         <property key="programmerToGoImageName" value="RGS_BringUp_ptg"/>
         <property key="programoptions.donoteraseauxmem" value="false"/>
         <property key="programoptions.eraseb4program" value="true"/>
@@ -1120,7 +1125,7 @@
         <property key="programoptions.pgdconfig" value="pull down"/>
         <property key="programoptions.pgdresistor.value" value="4.7"/>
         <property key="programoptions.pgmentry.voltage" value="low"/>
-        <property key="programoptions.pgmspeed" value="Min"/>
+        <property key="programoptions.pgmspeed" value="Med"/>
         <property key="programoptions.preservedataflash" value="false"/>
         <property key="programoptions.preservedataflash.ranges"
                   value="${memories.dataflash.default}"/>
@@ -1140,7 +1145,7 @@
                   value="toolpack.updateoptions.uselatestoolpack"/>
         <property key="toolpack.updateoptions.packversion"
                   value="Press to select which tool pack to use"/>
-        <property key="voltagevalue" value="3.25"/>
+        <property key="voltagevalue" value="3.3"/>
       </pk4hybrid>
     </conf>
   </confs>

@@ -162,6 +162,100 @@ static void uart_puts(const char *s)
 }
 
 
+/* ---- Jetson command interface on UART1 ---------------------------------
+ * Wire-compatible with the bootloader's command protocol, so the host side is
+ * identical whether the bootloader or this jig is running. The bootloader
+ * uses raw packed structs with no framing:
+ *
+ *   command  (host -> board), 11 bytes:
+ *       uint8_t  cmd
+ *       uint16_t dataLength
+ *       uint32_t unlockSequence
+ *       uint32_t address
+ *   response (board -> host), 12 bytes: the same 11 fields plus a status byte
+ *
+ * RESET_DEVICE is 0x09, and the bootloader answers it with a FIXED response
+ * (cmd 9, all other fields zero, status 0x01) rather than echoing what it
+ * received - so this does the same. Reset is the only command implemented;
+ * others are simply ignored, which keeps stray terminal traffic harmless.
+ */
+#define JIG_CMD_RESET_DEVICE  0x09
+#define JIG_CMD_LENGTH        11      /* == sizeof(struct CMD_STRUCT_0) */
+#define JIG_CMD_SUCCESS       0x01
+
+static uint8_t jigCmdLen = 0;
+
+/* Byte writer with the same bounded, watchdog-safe wait as uart_puts(). */
+static void uart_putb(uint8_t b)
+{
+    uint16_t guard = 0;
+
+    while (!UART1_IsTxReady())
+    {
+        if (++guard >= 10000)
+            return;
+        __delay32(FCY / 100000ul);
+        ClrWdt();
+    }
+    UART1_Write(b);
+}
+
+/* Interrupt-driven rather than polled: the jig spends seconds at a time
+ * inside gauge transactions where nothing would service the port. The RX
+ * FIFO is only four deep, so an 11-byte command arriving during one of those
+ * would overflow it, latch OERR, and leave the receiver DEAD until something
+ * read it - missing the command and every command after it. An interrupt
+ * cannot miss the frame.
+ *
+ * The handler does almost nothing until a complete reset command arrives, at
+ * which point it answers and resets the device - so how long that last part
+ * takes stops mattering. */
+void __attribute__((interrupt, no_auto_psv)) _U1RXInterrupt(void)
+{
+    uint8_t b, i;
+    uint16_t guard;
+
+    IFS0bits.U1RXIF = 0;
+
+    while (U1STAbits.URXDA)
+    {
+        b = (uint8_t)U1RXREG;
+
+        /* A frame can only begin with a command byte we recognise, so stray
+         * characters from a terminal never leave us half-way through a
+         * phantom packet waiting for bytes that will not come. */
+        if (jigCmdLen == 0 && b != JIG_CMD_RESET_DEVICE)
+            continue;
+
+        if (++jigCmdLen < JIG_CMD_LENGTH)
+            continue;                   /* still collecting */
+
+        jigCmdLen = 0;
+
+        /* Fixed response, byte-for-byte as the bootloader's ResetDevice(). */
+        uart_putb(JIG_CMD_RESET_DEVICE);
+        for (i = 0; i < 10; i++)
+            uart_putb(0x00);
+        uart_putb(JIG_CMD_SUCCESS);
+
+        /* Let the reply leave the shift register before resetting, or the
+         * host sees a truncated response. */
+        for (guard = 0; !UART1_IsTxDone() && guard < 10000; guard++)
+        {
+            __delay32(FCY / 100000ul);
+            ClrWdt();
+        }
+        __delay_ms(2);
+
+        asm("reset");
+    }
+
+    /* An overrun latches the receiver off until OERR is cleared by hand. */
+    if (U1STAbits.OERR)
+        U1STAbits.OERR = 0;
+}
+
+
 int main(void)
 {
     /* ---- Cold start vs warm reset (REVIEW) --------------------------------
@@ -309,6 +403,8 @@ int main(void)
     LightingUpdate=0;
     uint8_t bugout;
     uint8_t reportTick;
+    uint8_t goldenBad;
+    uint8_t goldenUnset;
     BQ_PROVISIONED prov;
   
     char LastOnOff;
@@ -344,6 +440,13 @@ int main(void)
     __delay_ms(2);                  /* let the line settle at idle */
     UART1_Initialize();
     __delay_ms(2);
+
+    /* Enable receive interrupts so a Jetson command is never missed, even
+     * while we are deep inside a gauge transaction. URXISEL in U1STA is 00
+     * (MCC default), so this fires on every character. */
+    IFS0bits.U1RXIF = 0;
+    IEC0bits.U1RXIE = 1;
+
     uart_puts("\r\nRGS BringUp jig: hello\r\n");
      BEAM_SetHigh();
 
@@ -374,26 +477,39 @@ int main(void)
        BI_LED_RED_SetLow();
        BI_LED_GREEN_SetLow();
 
-       prov = BQ40Z50_IsProvisioned();
-       if (prov != BQ_PROV_YES)
+       /* Provisioning is judged by the WHOLE golden image now, not just the
+        * DA Config byte. BringUp() still runs first when something is wrong:
+        * it does the parts that are not data flash - probe, unseal, FET
+        * enable, gauge reset - and unsealing is what makes the writes legal. */
+       BQ40Z50_VerifyGoldenImage(&goldenBad, &goldenUnset);
+       if (goldenBad != 0)
        {
            BQ40Z50_BringUp();
-           prov = BQ40Z50_IsProvisioned();   /* verify it actually took */
+           BQ40Z50_ApplyGoldenImage();
+           BQ40Z50_VerifyGoldenImage(&goldenBad, &goldenUnset);
        }
 
-       /* Park showing the verdict. All THREE outcomes get their own pattern:
-        * BQ_PROV_UNKNOWN means the read failed (flaky bus, or a gauge that
-        * would not wake), NOT that the pack is good - showing it as a pass
-        * would let an unprovisioned pack ship on a single bad transaction.
+       if (goldenBad != 0)
+           prov = BQ_PROV_NO;        /* entries wrong, or unreadable */
+       else if (goldenUnset != 0)
+           prov = BQ_PROV_UNKNOWN;   /* correct so far, but image incomplete */
+       else
+           prov = BQ_PROV_YES;
+
+       /* Park showing the verdict. All THREE outcomes get their own pattern,
+        * and an INCOMPLETE image must never show as a pass - otherwise a pack
+        * with no capacity or gauging configured looks identical to a finished
+        * one.
         *
-        *   solid green            - provisioned, verified
-        *   red flashing           - definitively NOT provisioned
-        *   green/red alternating  - could not verify; retry or investigate
+        *   solid green            - golden image complete and verified
+        *   red flashing           - entries wrong or unreadable
+        *   green/red alternating  - verified so far, but values still unset
         */
        BI_LED_GREEN_SetHigh();
        BI_LED_RED_SetLow();
-       
+
        BQ40Z50_ReportStatus();
+       BQ40Z50_ReportGoldenImage();
        reportTick = 0;
        while (1)
        {
@@ -444,7 +560,7 @@ int main(void)
        uart_puts("\r\nCheck ...Check both IR lights ON.......??\r\n");
        PWM_IR_SetHigh();
        WDT_SafeDelay10thSecs(20);
-       uart_puts("\r\nCheck ...Check both IR lights OFF.......??\r\n");
+      
        
       
        uart_puts("\r\n***********************************\r\n");
@@ -510,7 +626,6 @@ int main(void)
        
       while(1)
       {
-          
           if (!POWER_BUTTON_GetValue())      /* active low */
           {
               PowerDown();

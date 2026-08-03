@@ -913,6 +913,199 @@ BQ_STATUS BQ40Z50_BringUp(void)
     return worst;
 }
 
+/* ---------------- Golden image ---------------- */
+
+static void bq_print_fail(void);        /* defined with the status report */
+
+/* Gas gauging is only enabled once Design Capacity is known - see the
+ * pack-specific block in bq40z50.h for why. */
+#if BQ_PACK_DESIGN_CAPACITY_MAH > 0
+#define BQ_GOLDEN_MFG_INIT   (BQ_MFG_FET_EN | BQ_MFG_GAUGE_EN)
+#else
+#define BQ_GOLDEN_MFG_INIT   (BQ_MFG_FET_EN)
+#endif
+
+#define BQ_GF_SKIP_IF_ZERO   0x01   /* 0 means "not configured", not a value */
+
+typedef struct
+{
+    uint16_t    address;
+    uint8_t     size;       /* 1 or 2 bytes */
+    uint8_t     flags;
+    uint16_t    value;
+    const char *name;
+} bq_golden_entry_t;
+
+/* Absolute values, not read-modify-write: a golden image should leave every
+ * pack in an identical, known state rather than inheriting whatever bits
+ * happened to be set. DA Config 0x17 = 4 cell + non-removable + SLEEP. */
+static const bq_golden_entry_t bq_golden[] =
+{
+    { BQ_DF_DA_CONFIGURATION,   1, 0,
+      (BQ_DA_CELL_COUNT_4S | BQ_DA_NR | 0x10),      "DA Config"      },
+    { BQ_DF_TEMPERATURE_ENABLE, 1, 0,
+      BQ_TEMP_ENABLE_BENCH,                         "Temp Enable"    },
+    { BQ_DF_TEMPERATURE_MODE,   1, 0,
+      BQ_TEMP_MODE_BENCH,                           "Temp Mode"      },
+    { BQ_DF_MFG_STATUS_INIT,    2, 0,
+      BQ_GOLDEN_MFG_INIT,                           "Mfg Status Init"},
+    { BQ_DF_DESIGN_CAPACITY_MAH, 2, BQ_GF_SKIP_IF_ZERO,
+      BQ_PACK_DESIGN_CAPACITY_MAH,                  "Design Cap mAh" },
+    { BQ_DF_DESIGN_CAPACITY_CWH, 2, BQ_GF_SKIP_IF_ZERO,
+      BQ_PACK_DESIGN_CAPACITY_CWH,                  "Design Cap cWh" },
+    { BQ_DF_DESIGN_VOLTAGE,      2, BQ_GF_SKIP_IF_ZERO,
+      BQ_PACK_DESIGN_VOLTAGE_MV,                    "Design Voltage" },
+};
+
+#define BQ_GOLDEN_COUNT  (sizeof(bq_golden) / sizeof(bq_golden[0]))
+
+volatile uint8_t bq_dbg_golden_mismatch;
+volatile uint8_t bq_dbg_golden_unset;
+
+static BQ_STATUS bq_golden_read(const bq_golden_entry_t *e, uint16_t *actual)
+{
+    uint8_t b = 0;
+    BQ_STATUS st;
+
+    if (e->size == 1)
+    {
+        st = bq_df_read_byte(e->address, &b);
+        *actual = b;
+        return st;
+    }
+    return bq_df_read_word(e->address, actual);
+}
+
+BQ_STATUS BQ40Z50_VerifyGoldenImage(uint8_t *mismatches, uint8_t *unset)
+{
+    uint16_t actual;
+    uint8_t i, bad = 0, skipped = 0;
+    BQ_STATUS st, worst = BQ_OK;
+
+    for (i = 0; i < BQ_GOLDEN_COUNT; i++)
+    {
+        if ((bq_golden[i].flags & BQ_GF_SKIP_IF_ZERO) && bq_golden[i].value == 0)
+        {
+            skipped++;
+            continue;
+        }
+        st = bq_golden_read(&bq_golden[i], &actual);
+        if (st != BQ_OK)
+        {
+            if (worst == BQ_OK)
+                worst = st;
+            bad++;                      /* unreadable counts as not verified */
+            continue;
+        }
+        if (actual != bq_golden[i].value)
+            bad++;
+    }
+
+    bq_dbg_golden_mismatch = bad;
+    bq_dbg_golden_unset = skipped;
+    if (mismatches != NULL)
+        *mismatches = bad;
+    if (unset != NULL)
+        *unset = skipped;
+    return worst;
+}
+
+BQ_STATUS BQ40Z50_ApplyGoldenImage(void)
+{
+    uint16_t actual;
+    uint8_t i;
+    BQ_STATUS st, worst = BQ_OK;
+
+    for (i = 0; i < BQ_GOLDEN_COUNT; i++)
+    {
+        const bq_golden_entry_t *e = &bq_golden[i];
+
+        if ((e->flags & BQ_GF_SKIP_IF_ZERO) && e->value == 0)
+            continue;
+
+        st = bq_golden_read(e, &actual);
+        if (st == BQ_OK && actual == e->value)
+            continue;                   /* already correct */
+
+        st = (e->size == 1) ? bq_df_write_byte(e->address, (uint8_t)e->value)
+                            : bq_df_write_word(e->address, e->value);
+        if (st != BQ_OK)
+        {
+            if (worst == BQ_OK) worst = st;
+            continue;
+        }
+
+        /* Re-read: a write that silently did not take is the failure mode
+         * that matters most here. */
+        st = bq_golden_read(e, &actual);
+        if (st != BQ_OK)
+        {
+            if (worst == BQ_OK) worst = st;
+        }
+        else if (actual != e->value && worst == BQ_OK)
+            worst = BQ_ERR_DF_VERIFY;
+    }
+    return worst;
+}
+
+void BQ40Z50_ReportGoldenImage(void)
+{
+    uint16_t actual, sbs = 0;
+    uint8_t i;
+    BQ_STATUS st;
+
+    bq_print_line("");
+    bq_print_line("Golden image:");
+
+    for (i = 0; i < BQ_GOLDEN_COUNT; i++)
+    {
+        const bq_golden_entry_t *e = &bq_golden[i];
+
+        bq_print("  ");
+        bq_print(e->name);
+        bq_print(" @");
+        bq_print_hex(e->address, 4);
+        bq_print(" : ");
+
+        if ((e->flags & BQ_GF_SKIP_IF_ZERO) && e->value == 0)
+        {
+            bq_print_line("NOT SET - pack value required");
+            continue;
+        }
+
+        st = bq_golden_read(e, &actual);
+        if (st != BQ_OK)
+        {
+            bq_print_fail();
+            continue;
+        }
+        bq_print_hex(actual, (uint8_t)(e->size * 2));
+        if (actual == e->value)
+            bq_print_line("  ok");
+        else
+        {
+            bq_print("  MISMATCH, want ");
+            bq_print_hex(e->value, (uint8_t)(e->size * 2));
+            bq_print_line("");
+        }
+    }
+
+    /* Byte-order sanity check. Multi-byte DF fields are only meaningful if we
+     * store them the way the gauge reads them, and Design Capacity is the one
+     * field we can cross-check: SBS DesignCapacity() (0x18) reports the gauge's
+     * own interpretation of DF 0x48E5. If these disagree, every multi-byte
+     * entry above is suspect. */
+    if (bq_df_read_word(BQ_DF_DESIGN_CAPACITY_MAH, &actual) == BQ_OK &&
+        bq_read_word(0x18, &sbs))
+    {
+        bq_print("  Byte order  : DF ");
+        bq_print_u16(actual);
+        bq_print(" mAh vs SBS ");
+        bq_print_u16(sbs);
+        bq_print_line(actual == sbs ? " mAh  ok" : " mAh  MISMATCH");
+    }
+}
+
 /* ---------------- Status report ---------------- */
 
 /* Read-only snapshot for main() to call on any pass. Each item is reported
