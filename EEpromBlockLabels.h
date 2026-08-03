@@ -43,25 +43,33 @@ extern "C" {
 #define   TableVersion 1
 
 
-//  READ ONLY Block 1
-//Addresses and field sizes of low order (frequent) read only data
-
 #define TransitTimeTicksAddr  0        // the raw measurement of ball speed, in  counter ticks
 #define TransitTimeTicksNumBytes 4
+ 
     
+    
+//Acceleromoter data addresses  
 #define AccelerometerXYZ_RawAddr (TransitTimeTicksAddr + TransitTimeTicksNumBytes)
 #define AccelerometerXYZ_RawNumBytes 6
-
-#define AccelerometerXYZ_DegAddr (AccelerometerXYZ_RawAddr + AccelerometerXYZ_RawNumBytes  )
-#define AccelerometerXYZ_DegNumBytes 6
-
-#define PitchAndRoll_Addr ( AccelerometerXYZ_DegAddr + AccelerometerXYZ_DegNumBytes)
+       
+#define Accl_X_LSB_Addr AccelerometerXYZ_RawAddr
+#define Accl_X_MSB_Addr (Accl_X_LSB_Addr + 1)
+#define Accl_Y_LSB_Addr ( Accl_X_MSB_Addr + 1)
+#define Accl_Y_MSB_Addr (Accl_Y_LSB_Addr +1 )   
+#define Accl_Z_LSB_Addr ( Accl_Y_MSB_Addr + 1)
+#define Accl_Z_MSB_Addr (Accl_Z_LSB_Addr +1 )    
+    
+#define PitchAndRoll_Addr ( AccelerometerXYZ_RawAddr + AccelerometerXYZ_RawNumBytes)
 #define PitchAndRollNumBytes 4
     
-
-#define BatteryChargeStateAddr (PitchAndRoll_Addr + PitchAndRollNumBytes  )
-#define BatteryChargeStateNumBytes 1
+#define PitchLSB_Addr PitchAndRoll_Addr
+#define PitchMSB_Addr (PitchLSB_Addr + 1)
+#define RollLSB_Addr ( PitchMSB_Addr + 1)
+#define RollMSB_Addr (RollLSB_Addr +1 )
     
+
+#define BatteryChargeState_Addr (PitchAndRoll_Addr + PitchAndRollNumBytes  )
+#define BatteryChargeStateNumBytes 1
 
  //READ ONLY Block 2   
  // addresses and field sizes of High order read only parameters 

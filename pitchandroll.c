@@ -6,6 +6,10 @@
 #define ANGLE_RESOLUTION_BITS  14
 #define ANGLE_SCALE_FACTOR     (8192.0f / ANGLE_FULL_SCALE_DEG)  // counts per degree
 
+
+// pretty much a maths cookbook approach. 
+// plenty of scope to optimise this - cordics, maybe,or look at Crenshaw, chapters 4 and 6
+
 void ComputePitchRoll(int16_t x_raw, int16_t y_raw, int16_t z_raw,
                        int16_t *pitch_out, int16_t *roll_out)
 {

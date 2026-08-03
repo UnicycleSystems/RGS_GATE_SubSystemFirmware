@@ -25,6 +25,8 @@
 #define FCY 16000000UL  // or whatever your instruction clock is
 #include <libpic30.h>
 #include "pitchandroll.h"
+#include "firmware_version.h"
+#include "EEpromBlockLabels.h"
 
 
 //accelerometer specific stuff....
@@ -354,6 +356,9 @@ int main(void)
     EMULATE_EEPROM_Memory[5] = (uint8_t)(0xF4);
     EMULATE_EEPROM_Memory[6] = (uint8_t)(0x24);
     EMULATE_EEPROM_Memory[7] = (uint8_t)(0x00);
+
+    EMULATE_EEPROM_Memory[FirmwareVersionAddr] = FIRMWARE_REV_LSB;
+    EMULATE_EEPROM_Memory[FirmwareVersionAddr-1] = FIRMWARE_REV_MSB;
  
    // INTERRUPT_TO_JETSON_SetLow();
     RestoreDetect();
@@ -681,7 +686,7 @@ bool LIS2DW12_Init_I2C2(void)
 {
     EMULATE_EEPROM_Memory[30] = 0xA1;     // entered init
 
-    s_addr=0x19;
+    s_addr=LIS_ADDR_0;    // 0x18, SA0 grounded - matches lis2dw12.h
 
     EMULATE_EEPROM_Memory[31] = s_addr;
     
@@ -743,37 +748,39 @@ void QuickAcellerometerGrabber(void)
         uint16_t ux = (uint16_t)x;
         uint16_t uy = (uint16_t)y;
         uint16_t uz = (uint16_t)z;
-       
+       // raw values
         
         // Pack as [X_H, X_L, Y_H, Y_L, Z_H, Z_L]
-        EMULATE_EEPROM_Memory[10]  = (uint8_t)(ux >> 8);
-         EMULATE_EEPROM_Memory[11] = (uint8_t)(ux);
-         EMULATE_EEPROM_Memory[12] = (uint8_t)(uy >> 8);
-         EMULATE_EEPROM_Memory[13] = (uint8_t)(uy);
-         EMULATE_EEPROM_Memory[14] = (uint8_t)(uz >> 8);
-         EMULATE_EEPROM_Memory[15] = (uint8_t)(uz);
+        EMULATE_EEPROM_Memory[Accl_X_LSB_Addr]  = (uint8_t)(ux >> 8);
+         EMULATE_EEPROM_Memory[Accl_X_MSB_Addr] = (uint8_t)(ux);
+         EMULATE_EEPROM_Memory[Accl_Y_LSB_Addr] = (uint8_t)(uy >> 8);
+         EMULATE_EEPROM_Memory[Accl_Y_MSB_Addr] = (uint8_t)(uy);
+         EMULATE_EEPROM_Memory[ Accl_Z_LSB_Addr] = (uint8_t)(uz >> 8);
+         EMULATE_EEPROM_Memory[Accl_Z_MSB_Addr] = (uint8_t)(uz);
         
-         
-         
+
             /* use raw counts; scale later if needed */
         }
         else // if it fubars, then just fill with 0xFF;
         {
-         EMULATE_EEPROM_Memory[10]  = 0xFF;
-         EMULATE_EEPROM_Memory[11] = 0xFF;
-         EMULATE_EEPROM_Memory[12] = 0xFF;
-         EMULATE_EEPROM_Memory[13] =0xFF;;
-         EMULATE_EEPROM_Memory[14] =0xFF;
-         EMULATE_EEPROM_Memory[15] =0xFF; 
+        EMULATE_EEPROM_Memory[Accl_X_LSB_Addr]  = 0xFF;
+         EMULATE_EEPROM_Memory[Accl_X_MSB_Addr] = 0xFF;
+         EMULATE_EEPROM_Memory[Accl_Y_LSB_Addr] = 0xFF;
+         EMULATE_EEPROM_Memory[Accl_Y_MSB_Addr] = 0xFF;
+         EMULATE_EEPROM_Memory[ Accl_Z_LSB_Addr] = 0xFF;
+         EMULATE_EEPROM_Memory[Accl_Z_MSB_Addr] = 0xFF;
         }
+        
+        
        ComputePitchRoll(x,y,z,&pitch,&roll);
         uint16_t upitch = (uint16_t)pitch;
     uint16_t uroll  = (uint16_t)roll;
+ 
     
-       EMULATE_EEPROM_Memory[16] = (uint8_t)(upitch >> 8);
-       EMULATE_EEPROM_Memory[17] = (uint8_t)(upitch);
-       EMULATE_EEPROM_Memory[18] = (uint8_t)(uroll >> 8);
-       EMULATE_EEPROM_Memory[19] = (uint8_t)(uroll);
+       EMULATE_EEPROM_Memory[PitchLSB_Addr] = (uint8_t)(upitch >> 8);
+       EMULATE_EEPROM_Memory[PitchMSB_Addr] = (uint8_t)(upitch);
+       EMULATE_EEPROM_Memory[RollLSB_Addr] = (uint8_t)(uroll >> 8);
+       EMULATE_EEPROM_Memory[RollMSB_Addr] = (uint8_t)(uroll);
 }
 
 //refactor into a general purpose button thing...
