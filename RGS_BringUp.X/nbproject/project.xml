@@ -10,6 +10,7 @@
             <make-dep-projects/>
             <sourceRootList>
                 <sourceRootElem>.</sourceRootElem>
+                <sourceRootElem>../CommonFiles/header</sourceRootElem>
             </sourceRootList>
             <confList>
                 <confElem>

@@ -26,7 +26,8 @@
 #include <libpic30.h>
 #include "pitchandroll.h"
 #include "firmware_version.h"
-#include "EEpromBlockLabels.h"
+#include "../CommonFiles/header/EEpromBlockLabels.h"
+
 
 
 //accelerometer specific stuff....

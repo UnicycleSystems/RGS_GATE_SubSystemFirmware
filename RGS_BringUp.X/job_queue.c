@@ -1,5 +1,5 @@
 #include "job_queue.h"
-#include "EEpromBlockLabels.h"
+#include "../CommonFiles/header/EEpromBlockLabels.h"
 #include "address_block_lookup.h"
 #include "RGS_MCC_Copies/pin_manager.h"
 #include "RGS_MCC_Copies/i2c1.h"

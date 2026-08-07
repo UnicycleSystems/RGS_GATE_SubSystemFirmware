@@ -1,5 +1,5 @@
 #include "address_block_lookup.h"
-#include "EEpromBlockLabels.h"
+#include "../CommonFiles/header/EEpromBlockLabels.h"
 // Each #define IS the block's start address or length. The
 // block_start_address[] / block_length[] tables below are built
 // directly from these, so the tables can never drift apart from each

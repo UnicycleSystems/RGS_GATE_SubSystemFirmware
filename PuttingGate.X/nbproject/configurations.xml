@@ -30,7 +30,7 @@
       <itemPath>i2c_write_queue.h</itemPath>
       <itemPath>address_block_lookup.h</itemPath>
       <itemPath>job_queue.h</itemPath>
-      <itemPath>EEpromBlockLabels.h</itemPath>
+      <itemPath>../CommonFiles/header/EEpromBlockLabels.h</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
                    displayName="Important Files"
@@ -96,6 +96,7 @@
   </logicalFolder>
   <sourceRootList>
     <Elem>.</Elem>
+    <Elem>../CommonFiles/header</Elem>
   </sourceRootList>
   <projectmakefile>Makefile</projectmakefile>
   <confs>
