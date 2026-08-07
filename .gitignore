@@ -1,0 +1,27 @@
+# MPLAB X build output
+build/
+dist/
+debug/
+*.production.hex
+*.debug.hex
+*.production.map
+*.debug.map
+
+# Per-machine MPLAB state (absolute paths, debugger serials)
+nbproject/private/
+**/nbproject/private/
+
+# Generated makefiles
+**/nbproject/Makefile-*.mk
+**/nbproject/Makefile-genesis.properties
+**/nbproject/Makefile-impl.mk
+**/nbproject/Makefile-local-*.mk
+**/nbproject/Makefile-variables.mk
+
+# Claude Code
+.claude/settings.local.json
+CLAUDE.local.md
+
+# OS
+Thumbs.db
+Desktop.ini

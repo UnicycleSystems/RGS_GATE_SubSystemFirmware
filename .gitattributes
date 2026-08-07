@@ -1,0 +1,17 @@
+* text=auto
+
+*.c   text
+*.h   text
+*.s   text
+*.inc text
+*.xml text
+*.mk  text
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sh  text eol=lf
+
+*.hex -text
+*.elf binary
+*.cof binary
+*.pdf binary
