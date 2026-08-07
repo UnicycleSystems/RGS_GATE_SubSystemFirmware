@@ -14,26 +14,27 @@
       <logicalFolder name="RGS_MCC_Copies"
                      displayName="RGS_MCC_Copies"
                      projectFiles="true">
-        <itemPath>RGS_MCC_Copies/FrontAlignLaser.h</itemPath>
-        <itemPath>RGS_MCC_Copies/clock.h</itemPath>
-        <itemPath>RGS_MCC_Copies/mcc.h</itemPath>
-        <itemPath>RGS_MCC_Copies/pin_manager.h</itemPath>
-        <itemPath>RGS_MCC_Copies/system.h</itemPath>
-        <itemPath>RGS_MCC_Copies/tmr1.h</itemPath>
-        <itemPath>RGS_MCC_Copies/tmr2.h</itemPath>
-        <itemPath>RGS_MCC_Copies/tmr4.h</itemPath>
-        <itemPath>RGS_MCC_Copies/i2c2.h</itemPath>
-        <itemPath>RGS_MCC_Copies/interrupt_manager.h</itemPath>
-        <itemPath>RGS_MCC_Copies/i2c1.h</itemPath>
-        <itemPath>RGS_MCC_Copies/uart1.h</itemPath>
+        <itemPath>../CommonFiles/header/FrontAlignLaser.h</itemPath>
+        <itemPath>../CommonFiles/header/clock.h</itemPath>
+        <itemPath>../CommonFiles/header/mcc.h</itemPath>
+        <itemPath>../CommonFiles/header/pin_manager.h</itemPath>
+        <itemPath>../CommonFiles/header/system.h</itemPath>
+        <itemPath>../CommonFiles/header/tmr1.h</itemPath>
+        <itemPath>../CommonFiles/header/tmr2.h</itemPath>
+        <itemPath>../CommonFiles/header/tmr4.h</itemPath>
+        <itemPath>../CommonFiles/header/i2c2.h</itemPath>
+        <itemPath>../CommonFiles/header/interrupt_manager.h</itemPath>
+        <itemPath>../CommonFiles/header/i2c1.h</itemPath>
+        <itemPath>../CommonFiles/header/uart1.h</itemPath>
       </logicalFolder>
-      <itemPath>pin_CustomISR.h</itemPath>
-      <itemPath>i2c_write_queue.h</itemPath>
-      <itemPath>address_block_lookup.h</itemPath>
-      <itemPath>job_queue.h</itemPath>
+      <itemPath>../CommonFiles/header/pin_CustomISR.h</itemPath>
+      <itemPath>../CommonFiles/header/i2c_write_queue.h</itemPath>
+      <itemPath>../CommonFiles/header/address_block_lookup.h</itemPath>
+      <itemPath>../CommonFiles/header/job_queue.h</itemPath>
       <itemPath>firmware_version.h</itemPath>
-      <itemPath>bq40z50.h</itemPath>
+      <itemPath>../CommonFiles/header/bq40z50.h</itemPath>
       <itemPath>../CommonFiles/header/EEpromBlockLabels.h</itemPath>
+      <itemPath>../CommonFiles/header/pitchandroll.h</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
                    displayName="Important Files"
@@ -73,29 +74,29 @@
       <logicalFolder name="RGS_MCC_Copies"
                      displayName="RGS_MCC_Copies"
                      projectFiles="true">
-        <itemPath>RGS_MCC_Copies/pin_manager.c</itemPath>
-        <itemPath>RGS_MCC_Copies/system.c</itemPath>
-        <itemPath>RGS_MCC_Copies/mcc.c</itemPath>
-        <itemPath>RGS_MCC_Copies/FrontAlignLaser.c</itemPath>
-        <itemPath>RGS_MCC_Copies/clock.c</itemPath>
-        <itemPath>RGS_MCC_Copies/tmr1.c</itemPath>
-        <itemPath>RGS_MCC_Copies/tmr2.c</itemPath>
-        <itemPath>RGS_MCC_Copies/tmr4.c</itemPath>
-        <itemPath>RGS_MCC_Copies/i2c2.c</itemPath>
-        <itemPath>RGS_MCC_Copies/interrupt_manager.c</itemPath>
-        <itemPath>RGS_MCC_Copies/i2c1.c</itemPath>
-        <itemPath>RGS_MCC_Copies/uart1.c</itemPath>
+        <itemPath>../CommonFiles/source/pin_manager.c</itemPath>
+        <itemPath>../CommonFiles/source/system.c</itemPath>
+        <itemPath>../CommonFiles/source/mcc.c</itemPath>
+        <itemPath>../CommonFiles/source/FrontAlignLaser.c</itemPath>
+        <itemPath>../CommonFiles/source/clock.c</itemPath>
+        <itemPath>../CommonFiles/source/tmr1.c</itemPath>
+        <itemPath>../CommonFiles/source/tmr2.c</itemPath>
+        <itemPath>../CommonFiles/source/tmr4.c</itemPath>
+        <itemPath>../CommonFiles/source/i2c2.c</itemPath>
+        <itemPath>../CommonFiles/source/interrupt_manager.c</itemPath>
+        <itemPath>../CommonFiles/source/i2c1.c</itemPath>
+        <itemPath>../CommonFiles/source/uart1.c</itemPath>
       </logicalFolder>
       <itemPath>main.c</itemPath>
-      <itemPath>bq40z50.c</itemPath>
-      <itemPath>Events.h</itemPath>
-      <itemPath>Events.c</itemPath>
-      <itemPath>JetsonInterface.c</itemPath>
-      <itemPath>pin_CustomISR.c</itemPath>
-      <itemPath>i2c_write_queue.c</itemPath>
-      <itemPath>address_block_lookup.c</itemPath>
-      <itemPath>job_queue.c</itemPath>
-      <itemPath>pitchandroll.c</itemPath>
+      <itemPath>../CommonFiles/source/bq40z50.c</itemPath>
+      <itemPath>../CommonFiles/header/Events.h</itemPath>
+      <itemPath>../CommonFiles/source/Events.c</itemPath>
+      <itemPath>../CommonFiles/source/JetsonInterface.c</itemPath>
+      <itemPath>../CommonFiles/source/pin_CustomISR.c</itemPath>
+      <itemPath>../CommonFiles/source/i2c_write_queue.c</itemPath>
+      <itemPath>../CommonFiles/source/address_block_lookup.c</itemPath>
+      <itemPath>../CommonFiles/source/job_queue.c</itemPath>
+      <itemPath>../CommonFiles/source/pitchandroll.c</itemPath>
     </logicalFolder>
   </logicalFolder>
   <sourceRootList>
@@ -364,76 +365,6 @@
                   value="Press to select which tool pack to use"/>
         <property key="voltagevalue" value="3.25"/>
       </ICD4Tool>
-      <item path="RGS_MCC_Copies/i2c1.c" ex="false" overriding="false">
-        <C30>
-        </C30>
-        <C30-AR>
-        </C30-AR>
-        <C30-AS>
-        </C30-AS>
-        <C30-CO>
-        </C30-CO>
-        <C30-LD>
-        </C30-LD>
-        <C30Global>
-        </C30Global>
-      </item>
-      <item path="RGS_MCC_Copies/mcc.c" ex="true" overriding="false">
-        <C30>
-        </C30>
-        <C30-AR>
-        </C30-AR>
-        <C30-AS>
-        </C30-AS>
-        <C30-CO>
-        </C30-CO>
-        <C30-LD>
-        </C30-LD>
-        <C30Global>
-        </C30Global>
-      </item>
-      <item path="RGS_MCC_Copies/mcc.h" ex="true" overriding="false">
-        <C30>
-        </C30>
-        <C30-AR>
-        </C30-AR>
-        <C30-AS>
-        </C30-AS>
-        <C30-CO>
-        </C30-CO>
-        <C30-LD>
-        </C30-LD>
-        <C30Global>
-        </C30Global>
-      </item>
-      <item path="RGS_MCC_Copies/pin_manager.c" ex="false" overriding="false">
-        <C30>
-        </C30>
-        <C30-AR>
-        </C30-AR>
-        <C30-AS>
-        </C30-AS>
-        <C30-CO>
-        </C30-CO>
-        <C30-LD>
-        </C30-LD>
-        <C30Global>
-        </C30Global>
-      </item>
-      <item path="RGS_MCC_Copies/system.c" ex="false" overriding="false">
-        <C30>
-        </C30>
-        <C30-AR>
-        </C30-AR>
-        <C30-AS>
-        </C30-AS>
-        <C30-CO>
-        </C30-CO>
-        <C30-LD>
-        </C30-LD>
-        <C30Global>
-        </C30Global>
-      </item>
       <Tool>
         <property key="ADC 1" value="true"/>
         <property key="AutoSelectMemRanges" value="auto"/>

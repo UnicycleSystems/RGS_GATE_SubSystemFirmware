@@ -2,31 +2,31 @@
 //#pragma config FWDTEN = OFF      // Watchdog Timer Enable (WDT disabled in hardware)
 //#pragma config WINDIS = ON       // Windowed WDT disabled (optional)
 
-#include "Events.h"
-#include "pin_CustomISR.h"
+#include "../CommonFiles/header/Events.h"
+#include "../CommonFiles/header/pin_CustomISR.h"
 
-#include "RGS_MCC_Copies/system.h"
-#include "RGS_MCC_Copies/clock.h"
-#include "RGS_MCC_Copies/interrupt_manager.h"
-#include "RGS_MCC_Copies/i2c2.h"
-#include "RGS_MCC_Copies/i2c1.h"
-#include "RGS_MCC_Copies/tmr4.h"
-#include "RGS_MCC_Copies/tmr2.h"
-#include "RGS_MCC_Copies/pin_manager.h"
-#include "RGS_MCC_Copies/uart1.h"
-#include "lis2dw12.h"
-#include "bq40z50.h"
+#include "../CommonFiles/header/system.h"
+#include "../CommonFiles/header/clock.h"
+#include "../CommonFiles/header/interrupt_manager.h"
+#include "../CommonFiles/header/i2c2.h"
+#include "../CommonFiles/header/i2c1.h"
+#include "../CommonFiles/header/tmr4.h"
+#include "../CommonFiles/header/tmr2.h"
+#include "../CommonFiles/header/pin_manager.h"
+#include "../CommonFiles/header/uart1.h"
+#include "../CommonFiles/header/lis2dw12.h"
+#include "../CommonFiles/header/bq40z50.h"
 
 #include <stdbool.h>
 #include <stdint.h>
-#include "i2c_write_queue.h"
-#include "address_block_lookup.h"
-#include "job_queue.h"
+#include "../CommonFiles/header/i2c_write_queue.h"
+#include "../CommonFiles/header/address_block_lookup.h"
+#include "../CommonFiles/header/job_queue.h"
 #include <xc.h>
 
 #define FCY 16000000UL  // or whatever your instruction clock is
 #include <libpic30.h>
-#include "pitchandroll.h"
+#include "../CommonFiles/header/pitchandroll.h"
 #include "firmware_version.h"
 #include "../CommonFiles/header/EEpromBlockLabels.h"
 
