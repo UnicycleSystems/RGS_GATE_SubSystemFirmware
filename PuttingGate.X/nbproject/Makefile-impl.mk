@@ -24,7 +24,7 @@ CLEAN_SUBPROJECTS=${CLEAN_SUBPROJECTS_${SUBPROJECTS}}
 
 
 # Project Name
-PROJECTNAME=RGS_PuttingGate.X
+PROJECTNAME=PuttingGate.X
 
 # Active Configuration
 DEFAULTCONF=standalone

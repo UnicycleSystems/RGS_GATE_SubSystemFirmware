@@ -332,7 +332,7 @@
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="poweroptions.powerenable" value="false"/>
         <property key="programmerToGoFilePath"
-                  value="C:/Projects_Firmware/RGS_PuttingGate.X/debug/default/RGS_PuttingGate_ptg"/>
+                  value="C:/Users/Peter/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_PuttingGate.X/debug/default/RGS_PuttingGate_ptg"/>
         <property key="programoptions.donoteraseauxmem" value="false"/>
         <property key="programoptions.eraseb4program" value="true"/>
         <property key="programoptions.ledbrightness" value="5"/>
@@ -1028,7 +1028,7 @@
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="poweroptions.powerenable" value="true"/>
         <property key="programmerToGoFilePath"
-                  value="C:/Projects_Firmware/RGS_PuttingGate.X/debug/standalone/RGS_PuttingGate_ptg"/>
+                  value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_PuttingGate.X/debug/standalone/RGS_PuttingGate_ptg"/>
         <property key="programmerToGoImageName" value="RGS_PuttingGate_ptg"/>
         <property key="programoptions.donoteraseauxmem" value="false"/>
         <property key="programoptions.eraseb4program" value="true"/>
