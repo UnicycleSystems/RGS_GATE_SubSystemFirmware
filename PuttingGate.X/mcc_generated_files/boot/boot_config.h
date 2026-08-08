@@ -34,10 +34,33 @@
 #define BOOT_CONFIG_H
 
 #define BOOT_CONFIG_PROGRAMMABLE_ADDRESS_LOW 0x2400
-#define BOOT_CONFIG_PROGRAMMABLE_ADDRESS_HIGH 0xA7FE
+#define BOOT_CONFIG_PROGRAMMABLE_ADDRESS_HIGH 0x9FFE
 
 #define BOOT_CONFIG_DOWNLOAD_LOW 0x2400
-#define BOOT_CONFIG_DOWNLOAD_HIGH 0xA7FE
+#define BOOT_CONFIG_DOWNLOAD_HIGH 0x9FFE
+
+/* ---- Persistent flash store (RGS) --------------------------------------
+ * Two erase pages sitting immediately above the application region, holding
+ * data that must survive a firmware update.
+ *
+ * The programmable/download range above deliberately STOPS at 0x9FFE (it was
+ * 0xA7FE) so the bootloader's IsLegalAddress() refuses every erase and write
+ * into this area. The protection is enforced in the device, not by whatever
+ * the host tool happens to send. The bootloader has, and needs, no knowledge
+ * of what is stored here.
+ *
+ * Two banks so a commit is power-fail safe: the spare bank is erased and
+ * written, and only becomes the live copy once its CRC and sequence number
+ * are in place. An erase page is 512 instructions = 0x400 PC units, so each
+ * bank is exactly one page.
+ *
+ * Deliberately NOT the 0xA800 page, which is also outside the download range:
+ * CONFIG1/CONFIG2 live at 0xABFC/0xABFE inside it, so erasing it would take
+ * the configuration fuses with it.
+ *
+ * The bank addresses themselves live in CommonFiles/header/persist_store.h,
+ * which is the single source of truth for the store's geometry.
+ */
 
 #define BOOT_CONFIG_VERIFICATION_APPLICATION_HEADER_SIZE 12
 

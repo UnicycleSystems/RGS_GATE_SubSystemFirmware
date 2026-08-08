@@ -165,7 +165,7 @@ bool queuepanic;
 
 I2C_WriteJob_t LoadJobFromEEprom;
 uint8_t JobIndex;
-
+ bool charged;
 
 int main(void)
 {
@@ -185,6 +185,10 @@ int main(void)
      *                      charger-loop / button-hold flow.
      */
     bool warmBoot = ((RCONbits.POR == 0));
+    
+//#define  quickhacktest
+    
+     
 
     if (warmBoot)
     {
@@ -192,12 +196,14 @@ int main(void)
         HOLD_PWR_SetHigh();
         JETSON_5V_ON_SetDigitalOutput();
         JETSON_5V_ON_SetHigh();
-        
+
+    
     }
 
     SYSTEM_Initialize();
     REAR_LASER_PWM_SetHigh();
     FRONT_LASER_PWM_SetHigh();
+ 
 
     LedOn=0;
     FrontSense=0;
@@ -236,10 +242,15 @@ int main(void)
     if (warmBoot)
     {
         JETSON_5V_ON_SetHigh();
+        ClrWdt();
+        
     }
     else
     {
-        JETSON_5V_ON_SetLow();
+          JETSON_5V_ON_SetLow();
+
+        
+         
     }
     
     
@@ -267,12 +278,14 @@ int main(void)
      * latched, so a misread can never strand a battery boot dead. */
     if (!warmBoot)
     {
+           
+        
         if (DEBUG_IN_GetValue() == 0)      /* /ACOK low -> charger present */
         {
-            bool charged;
+         
             charged = 0;
             HOLD_PWR_SetLow();             /* charger holds the rail; unplug-while-idle -> off */
-
+        }
             while(POWER_BUTTON_GetValue()) /* wait for a button press to power on */
             {
                 ClrWdt();
@@ -302,7 +315,7 @@ int main(void)
             HOLD_PWR_SetHigh();
             while(!PowerButton(On))//wait for a 'power on' press and hold to complete
                 ClrWdt();
-        }
+        
         /* else: no charger -> battery button-boot -> HOLD_PWR already high,
          * fall straight through to running. Single press. */
     }
@@ -816,10 +829,17 @@ void PowerDown(void)
               asm("reset");  
             }
         }
-       
+
     }
+
+    /* Only reached when the hold was too short - a qualifying hold never
+     * returns from the loop above. PowerButton() borrowed the LEDs while
+     * counting and left them out, so restore the normal running display
+     * (green) rather than leaving the unit dark but running. */
+    BI_LED_GREEN_SetHigh();
+    BI_LED_RED_SetLow();
     return;
-    
+
 }
 
 
@@ -856,29 +876,50 @@ uint8_t PowerButton (bool OnOff)
       }
 
     }
-    if (OnOff)
+    /* Act only on a qualifying hold. A press that is released too soon leaves
+     * the power rails exactly as it found them - the LED activity above was
+     * just feedback while counting, so put the LEDs back out and report the
+     * failure to the caller. */
+    if (ButtonPassed)
     {
-         HOLD_PWR_SetHigh();
-         JETSON_5V_ON_SetHigh();
-         BI_LED_GREEN_SetHigh();//Turn/JETSON_5V_ON_SetHigh(); on Green LED
-         BI_LED_RED_SetLow();//Turn off Red LED 
+        if (OnOff)
+        {
+             HOLD_PWR_SetHigh();
+             JETSON_5V_ON_SetHigh();
+             BI_LED_GREEN_SetHigh();//Turn/JETSON_5V_ON_SetHigh(); on Green LED
+             BI_LED_RED_SetLow();//Turn off Red LED
+        }
+        else
+        {
+          BI_LED_RED_SetHigh();//Turn on Red LED
+          BI_LED_GREEN_SetLow();//Turn off Green LED
+        }
     }
     else
     {
-      BI_LED_RED_SetHigh();//Turn on Red LED
-      BI_LED_GREEN_SetLow();//Turn off Green LED  
-    }
-        
+      BI_LED_GREEN_SetLow();//Released too soon - both LEDs out
+      BI_LED_RED_SetLow();
 
+      /* Return straight away. The wait-for-release below must NOT run on this
+       * path: the counting loop only exited because the button was already
+       * released, so there is nothing to wait for - but if the user presses
+       * again while we sit here, that press is consumed as a release-wait and
+       * never counted. The caller loops on this function, so a swallowed press
+       * means no subsequent press ever powers the unit up. */
+      return(ButtonPassed);
+    }
+
+    /* Only after a qualifying hold: wait for release so the caller does not
+     * see the same press a second time. */
     __delay_ms(50);
     while(!POWER_BUTTON_GetValue())
     {
         ClrWdt();
-       __delay_ms(50);    
+       __delay_ms(50);
     }
-    
+
     __delay_ms(50);
-    
+
      while(!POWER_BUTTON_GetValue())
     {
          ClrWdt();

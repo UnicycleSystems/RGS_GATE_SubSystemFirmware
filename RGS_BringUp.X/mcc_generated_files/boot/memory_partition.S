@@ -36,13 +36,18 @@
 #include "boot_config.h"
     .equ    ERASE_PAGE_MASK,(~((1024) - 1)) 
     .equ    LAST_PAGE_START_ADDRESS, (0xABFA & ERASE_PAGE_MASK)
-    .equ    RESERVED_MEMORY_START, (0xA7FE+2)
+    /* Derived from the configured top of the application region rather than
+     * hardcoded, so it follows automatically when that range changes. It is
+     * now 0xA000, which reserves the two persistent-flash banks
+     * (BOOT_CONFIG_PERSIST_BANK_A/B) as well as the old config-page area --
+     * application code must not link into either. */
+    .equ    RESERVED_MEMORY_START, (BOOT_CONFIG_PROGRAMMABLE_ADDRESS_HIGH+2)
     .equ    PROGRAM_MEMORY_ORIGIN, (0x200)
     .equ    LAST_ADDRESS_OF_MEMORY, (0xABFA)
    
     /* The exectuable application image lives between:
      *   Start Address = 0x2400
-     *   End Address = 0xA7FE
+     *   End Address = 0x9FFE
      * 
      * All other memory on the device must be reserved so that executable
      * application code can't link to those addresses.  This includes the space
