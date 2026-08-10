@@ -27,6 +27,7 @@
 #define FCY 16000000UL  // or whatever your instruction clock is
 #include <libpic30.h>
 #include "../CommonFiles/header/pitchandroll.h"
+#include "../CommonFiles/header/persist_store.h"
 #include "firmware_version.h"
 #include "../CommonFiles/header/EEpromBlockLabels.h"
 
@@ -423,7 +424,7 @@ int main(void)
     
     EMULATE_EEPROM_Memory[FirmwareVersionAddr] = FIRMWARE_REV_LSB;
     EMULATE_EEPROM_Memory[FirmwareVersionAddr-1] = FIRMWARE_REV_MSB;
- 
+
    // INTERRUPT_TO_JETSON_SetLow();
     RestoreDetect();
    
@@ -458,6 +459,33 @@ int main(void)
         uart_puts("I2C2 bus unwedge: ok\r\n");
     else
         uart_puts("I2C2 bus unwedge: BUS STILL STUCK\r\n");
+
+    /* Factory bring-up: commit EMULATE_EEPROM_Memory (set from the hardcoded
+     * values earlier in main) to persistent flash, where it survives a
+     * bootloader update and is restored by the field application at every
+     * boot. Placed here rather than beside those values because UART1 only
+     * comes up a few lines above - SYSTEM_Initialize() leaves it commented
+     * out - and the result is worth reporting.
+     *
+     * Load first so the shadow holds whatever is already stored, then write
+     * only when the block has actually changed: a jig is power-cycled far more
+     * often than a field unit and flash endurance is finite. A blank device
+     * never matches, so the first run on a new board always provisions.
+     *
+     * The write blocks for ~30 ms with interrupts unserviced. Safe here - it
+     * is before the jig loop and nothing is mid-transaction. */
+    PERSIST_Load();
+    if (!PERSIST_EepromMatchesStore())
+    {
+        if (PERSIST_SaveFromEeprom())
+            uart_puts("Persistent config: WRITTEN\r\n");
+        else
+            uart_puts("Persistent config: ** WRITE FAILED **\r\n");
+    }
+    else
+    {
+        uart_puts("Persistent config: already up to date\r\n");
+    }
 
     /* BRING-UP JIG: repeat the report forever (green LED heartbeat between
      * runs) so a serial monitor attached at any time sees it within a few

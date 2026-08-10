@@ -94,4 +94,56 @@ bool PERSIST_Commit(void);
  *  Lets a caller skip a needless erase/write cycle. */
 bool PERSIST_IsDirty(void);
 
+/* ---- Whole-block mirror to the I2C register file -----------------------
+ * The two calls every application needs. EMULATE_EEPROM_Memory is the RAM
+ * image the Jetson reads and writes over I2C; these copy the whole of it in
+ * and out of flash, so the Jetson interface is unchanged and no new addresses
+ * are needed.
+ *
+ * The mirrored span is named below rather than hardcoded, so narrowing it
+ * (e.g. to start at ConfigLasersAddr and leave the live measurement fields
+ * alone) is a one-line change here. */
+#define PERSIST_MIRROR_FIRST  0u
+#define PERSIST_MIRROR_BYTES  256u      /* == EMULATE_EEPROM_SIZE */
+
+/**
+ * Flash -> RAM. Loads the newest valid bank and copies the mirrored span into
+ * EMULATE_EEPROM_Memory. Call once at start-up, after SYSTEM_Initialize() and
+ * before anything reads configuration.
+ *
+ * On a blank device (no valid bank) the register file is left exactly as the
+ * caller initialised it -- defaults are NOT overwritten with zeros -- and
+ * false is returned. That is the normal first-power-up result, not an error.
+ */
+bool PERSIST_LoadToEeprom(void);
+
+/**
+ * RAM -> flash. Copies the mirrored span out of EMULATE_EEPROM_Memory and
+ * commits it. Blocking, roughly 30 ms, during which interrupts (including the
+ * I2C slave) are not serviced - call it at a quiescent point, not part-way
+ * through a transaction.
+ *
+ * Writes NOTHING when the store already holds the same bytes, so it is safe
+ * to call on every config change or on a repeated host command without
+ * wearing the flash out. Requires that PERSIST_Load() or
+ * PERSIST_LoadToEeprom() has run, so the shadow holds the stored copy to
+ * compare against.
+ *
+ * @return true if the new bank verified, or if there was nothing to write;
+ *         on false the previous contents are still intact and the call may
+ *         simply be retried.
+ */
+bool PERSIST_SaveFromEeprom(void);
+
+/**
+ * True if the mirrored span of EMULATE_EEPROM_Memory already matches what is
+ * in the store, i.e. a save would change nothing.
+ *
+ * Compares against the shadow, so PERSIST_Load() (or PERSIST_LoadToEeprom())
+ * must have run first. Intended to keep a factory jig from erasing and
+ * rewriting a flash page on every power-up: endurance is finite and a jig
+ * gets power-cycled far more often than a field unit.
+ */
+bool PERSIST_EepromMatchesStore(void);
+
 #endif	/* PERSIST_STORE_H */

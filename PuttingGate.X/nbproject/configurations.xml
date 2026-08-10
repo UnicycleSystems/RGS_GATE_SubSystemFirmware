@@ -31,6 +31,8 @@
       <itemPath>../CommonFiles/header/address_block_lookup.h</itemPath>
       <itemPath>../CommonFiles/header/job_queue.h</itemPath>
       <itemPath>../CommonFiles/header/EEpromBlockLabels.h</itemPath>
+      <itemPath>../CommonFiles/header/persist_store.h</itemPath>
+      <itemPath>../CommonFiles/header/flash.h</itemPath>
       <itemPath>../CommonFiles/header/pitchandroll.h</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
@@ -91,6 +93,8 @@
       <itemPath>../CommonFiles/source/i2c_write_queue.c</itemPath>
       <itemPath>../CommonFiles/source/address_block_lookup.c</itemPath>
       <itemPath>../CommonFiles/source/job_queue.c</itemPath>
+      <itemPath>../CommonFiles/source/persist_store.c</itemPath>
+      <itemPath>../CommonFiles/source/flash.s</itemPath>
       <itemPath>../CommonFiles/source/pitchandroll.c</itemPath>
     </logicalFolder>
     <itemPath>firmware_version.h</itemPath>

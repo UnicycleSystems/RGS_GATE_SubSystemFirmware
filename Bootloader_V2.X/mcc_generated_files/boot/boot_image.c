@@ -35,7 +35,7 @@
 #include <stdbool.h>
 #include <string.h>
 
-#include "../memory/flash.h"
+#include "../../../CommonFiles/header/flash.h"
 #include "boot_private.h"
 #include "boot_image.h"
 #include "boot_config.h"

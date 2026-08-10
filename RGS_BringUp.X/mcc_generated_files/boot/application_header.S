@@ -44,10 +44,20 @@
     .space 4, 0
 
     /* Address where to start the verification check */
-    .long(0x2400)
+    .long(BOOT_CONFIG_PROGRAMMABLE_ADDRESS_LOW)
 
-    /* Address where to end the verification check */
-    .long(0xA7FE)
+    /* Address where to end the verification check.
+     *
+     * Derived from boot_config.h rather than hardcoded: these two values were
+     * 0x2400/0xA7FE while the configured range said 0x9FFE, and the bootloader
+     * rejects an image whose header end exceeds PROGRAMMABLE_ADDRESS_HIGH
+     * (boot_verify_crc32.c). Deriving them keeps header and range in step.
+     *
+     * It also matters for the persistent flash store: the bootloader CRCs
+     * exactly this range, so the persist banks at 0xA000-0xA7FF must fall
+     * OUTSIDE it - otherwise every commit would change the CRC and the
+     * application would be judged invalid on the next boot. */
+    .long(BOOT_CONFIG_PROGRAMMABLE_ADDRESS_HIGH)
 
     /* Firmware Image Reset Remap */
     goto __resetPRI 

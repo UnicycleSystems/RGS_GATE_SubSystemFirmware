@@ -51,7 +51,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "memory/flash.h"
+#include "../../CommonFiles/header/flash.h"
 #include "boot/boot_process.h"
 #include "interrupt_manager.h"
 #include "traps.h"

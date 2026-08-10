@@ -25,6 +25,7 @@
 #define FCY 16000000UL  // or whatever your instruction clock is
 #include <libpic30.h>
 #include "../CommonFiles/header/pitchandroll.h"
+#include "../CommonFiles/header/persist_store.h"
 #include "firmware_version.h"
 #include "../CommonFiles/header/EEpromBlockLabels.h"
 
@@ -370,6 +371,17 @@ int main(void)
     EMULATE_EEPROM_Memory[5] = (uint8_t)(0xF4);
     EMULATE_EEPROM_Memory[6] = (uint8_t)(0x24);
     EMULATE_EEPROM_Memory[7] = (uint8_t)(0x00);
+
+    /* Restore the configuration saved by the factory bring-up jig. Placed
+     * AFTER the hardcoded setters above so the stored values win (those
+     * setters become redundant once every unit has been through bring-up),
+     * and BEFORE the firmware version stamp below - the whole 256-byte block
+     * is mirrored, so FirmwareVersionAddr is in it, and a unit must report the
+     * version it is RUNNING, not the one current when the block was saved.
+     *
+     * Returns false on a blank device (never brought up), leaving the defaults
+     * above in place. That is not an error. */
+    PERSIST_LoadToEeprom();
 
     EMULATE_EEPROM_Memory[FirmwareVersionAddr] = FIRMWARE_REV_LSB;
     EMULATE_EEPROM_Memory[FirmwareVersionAddr-1] = FIRMWARE_REV_MSB;

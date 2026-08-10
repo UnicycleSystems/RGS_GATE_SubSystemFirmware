@@ -21,7 +21,19 @@
 
 #include "../header/persist_store.h"
 #include "../header/flash.h"
+#include "../header/MemoryMap.h"      /* EMULATE_EEPROM_Memory + its size */
 #include <string.h>
+
+/* The mirror must fit the store, and the store's view of the register file
+ * must match the register file's own. EMULATE_EEPROM_SIZE is unfortunately
+ * defined in two places (MemoryMap.h and i2c1.h) - if they ever disagree this
+ * is where it would silently corrupt, so fail the build instead. */
+#if (PERSIST_MIRROR_FIRST + PERSIST_MIRROR_BYTES) > PERSIST_SIZE
+#error "persist mirror span does not fit PERSIST_SIZE"
+#endif
+#if PERSIST_MIRROR_BYTES != EMULATE_EEPROM_SIZE
+#error "PERSIST_MIRROR_BYTES disagrees with EMULATE_EEPROM_SIZE"
+#endif
 
 #define PERSIST_MAGIC        0xA5C3u
 #define PERSIST_HEADER_SIZE  16u
@@ -171,6 +183,53 @@ void PERSIST_SetBlock(uint16_t offset, const uint8_t *src, uint16_t length)
 bool PERSIST_IsDirty(void)
 {
     return (!shadowValid) || (Crc16(shadow, PERSIST_SIZE) != shadowCrc);
+}
+
+bool PERSIST_LoadToEeprom(void)
+{
+    bool valid = PERSIST_Load();
+
+    /* Only overwrite the register file when there was something real to
+     * restore. On a blank device the caller's defaults are worth more than a
+     * block of zeros - and the Jetson would otherwise read zeros as if they
+     * had been configured. */
+    if (valid)
+        memcpy(&EMULATE_EEPROM_Memory[PERSIST_MIRROR_FIRST],
+               &shadow[PERSIST_MIRROR_FIRST],
+               PERSIST_MIRROR_BYTES);
+
+    return valid;
+}
+
+bool PERSIST_SaveFromEeprom(void)
+{
+    /* Nothing new to say -> no erase, no write. Enforced here rather than
+     * left to each caller: flash endurance is finite (~10k erase cycles per
+     * page), and a host that repeats a save command - or a jig that is power
+     * cycled repeatedly - would otherwise burn a cycle rewriting identical
+     * data. Reports success because the store already holds what was asked
+     * for. A blank device never matches, so first provisioning always writes. */
+    if (PERSIST_EepromMatchesStore())
+        return true;
+
+    memcpy(&shadow[PERSIST_MIRROR_FIRST],
+           &EMULATE_EEPROM_Memory[PERSIST_MIRROR_FIRST],
+           PERSIST_MIRROR_BYTES);
+
+    return PERSIST_Commit();
+}
+
+bool PERSIST_EepromMatchesStore(void)
+{
+    /* A blank device has no stored copy, so nothing can match it - say so
+     * rather than comparing against the zeroed shadow and reporting a false
+     * match on an all-zero register file. */
+    if (!shadowValid)
+        return false;
+
+    return (memcmp(&shadow[PERSIST_MIRROR_FIRST],
+                   &EMULATE_EEPROM_Memory[PERSIST_MIRROR_FIRST],
+                   PERSIST_MIRROR_BYTES) == 0);
 }
 
 bool PERSIST_Commit(void)
