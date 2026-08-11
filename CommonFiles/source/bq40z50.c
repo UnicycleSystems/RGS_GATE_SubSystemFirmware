@@ -938,11 +938,30 @@ typedef struct
 
 /* Absolute values, not read-modify-write: a golden image should leave every
  * pack in an identical, known state rather than inheriting whatever bits
- * happened to be set. DA Config 0x17 = 4 cell + non-removable + SLEEP. */
+ * happened to be set.
+ *
+ * Note that "absolute" cuts both ways: Mfg Status Init below is written whole,
+ * so bits the pack arrived with but that are not named here are CLEARED. The
+ * pack read 0x0310 before provisioning and now gets 0x0018 - GAUGE_EN gained,
+ * bits 8 and 9 lost. Deliberate, but worth knowing when a pack behaves
+ * differently after bring-up. */
 static const bq_golden_entry_t bq_golden[] =
 {
+    /* SLEEP deliberately NOT set. Policy for this product is that the pack
+     * FETs stay closed under as many conditions as possible: the unit is
+     * permanently installed (hence NR), and a gauge that has dozed off will
+     * not necessarily wake on the small initial load of a button press, which
+     * leaves the unit apparently dead until it is put on charge.
+     *
+     * The cost is standby current: without SLEEP the pack self-discharges
+     * faster in storage, which brings the (voltage-triggered) SHUTDOWN
+     * threshold closer. That is the trade being made knowingly.
+     *
+     * 0x07 = 4 cell + non-removable. The R2 factory default 0x12 HAS the sleep
+     * bit set, so this must be written explicitly on every pack - it is not
+     * something a blank part gives you. */
     { BQ_DF_DA_CONFIGURATION,   1, 0,
-      (BQ_DA_CELL_COUNT_4S | BQ_DA_NR | 0x10),      "DA Config"      },
+      (BQ_DA_CELL_COUNT_4S | BQ_DA_NR),             "DA Config"      },
     { BQ_DF_TEMPERATURE_ENABLE, 1, 0,
       BQ_TEMP_ENABLE_BENCH,                         "Temp Enable"    },
     { BQ_DF_TEMPERATURE_MODE,   1, 0,

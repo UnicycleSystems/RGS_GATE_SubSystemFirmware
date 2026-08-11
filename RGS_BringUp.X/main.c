@@ -184,7 +184,25 @@ static void uart_puts(const char *s)
 #define JIG_CMD_LENGTH        11      /* == sizeof(struct CMD_STRUCT_0) */
 #define JIG_CMD_SUCCESS       0x01
 
+/* Handover marker printed when bring-up has finished and the jig is parked.
+ * rgs_bootload_BringUp.py watches the serial line for this EXACT text: seeing
+ * it, the host detaches its monitor and offers to flash a new image. Change
+ * this and you must change JIG_PROMPT_LOAD in that script to match. */
+#define JIG_PROMPT_LOAD  "Hit Enter to load new image"
+
 static uint8_t jigCmdLen = 0;
+
+/* ---- Operator input over UART1 -----------------------------------------
+ * Bytes that are not part of a reset command are treated as the operator
+ * pressing a key at the far end of the serial link, and are handed to
+ * uart_wait_key(). Written by the RX interrupt, read by the main line, so
+ * both are volatile.
+ *
+ * Only ONE byte is kept: this is for "hit a key to carry on", not a command
+ * line, so a fast typist simply loses the extra characters rather than
+ * needing a buffer. */
+static volatile bool    uart_key_ready = false;
+static volatile uint8_t uart_key_byte  = 0;
 
 /* Byte writer with the same bounded, watchdog-safe wait as uart_puts(). */
 static void uart_putb(uint8_t b)
@@ -224,9 +242,27 @@ void __attribute__((interrupt, no_auto_psv)) _U1RXInterrupt(void)
 
         /* A frame can only begin with a command byte we recognise, so stray
          * characters from a terminal never leave us half-way through a
-         * phantom packet waiting for bytes that will not come. */
+         * phantom packet waiting for bytes that will not come.
+         *
+         * Those stray characters are exactly what the operator types, so hand
+         * them to uart_wait_key() instead of discarding them. A reset command
+         * still takes priority: 0x09 starts a frame and never registers as a
+         * key press, so the host can always reset the jig even while it is
+         * sitting at a prompt. */
         if (jigCmdLen == 0 && b != JIG_CMD_RESET_DEVICE)
+        {
+            /* FIRST byte wins, and anything after it is dropped until the main
+             * line consumes it. The host monitor is line buffered, so choosing
+             * a menu item sends the character AND a newline about 87us apart
+             * at 115200 - overwriting here would mean uart_wait_key() always
+             * saw the newline and every selection read as "invalid". */
+            if (!uart_key_ready)
+            {
+                uart_key_byte  = b;
+                uart_key_ready = true;
+            }
             continue;
+        }
 
         if (++jigCmdLen < JIG_CMD_LENGTH)
             continue;                   /* still collecting */
@@ -254,6 +290,274 @@ void __attribute__((interrupt, no_auto_psv)) _U1RXInterrupt(void)
     /* An overrun latches the receiver off until OERR is cleared by hand. */
     if (U1STAbits.OERR)
         U1STAbits.OERR = 0;
+}
+
+
+/* Print a prompt and wait for the operator to send any character.
+ *
+ * Anything already received is discarded first, so noise on the line - or a
+ * character typed before the prompt appeared - cannot skip the pause.
+ *
+ * Blocks indefinitely by design: the jig is attended, and a bring-up that
+ * quietly carried on unattended would be worse than one that waits. The
+ * watchdog is fed throughout, and the RX interrupt stays live, so the host
+ * can still reset the jig out of this loop with a RESET_DEVICE command.
+ *
+ * The POWER BUTTON is honoured here too, so the unit can always be switched
+ * off by hand - from the menu, or from any prompt - without needing the
+ * serial link or the host at all. Every wait in the jig goes through this
+ * function, so putting it here covers the lot rather than each caller having
+ * to remember. A qualifying hold never returns (PowerDown drops the rails and
+ * resets); a short press just borrows the LEDs while counting, so restore them
+ * on the way back.
+ *
+ * @return the character the operator sent, for callers that want to offer a
+ *         choice rather than just "carry on".
+ */
+static uint8_t uart_wait_key(const char *prompt)
+{
+    uart_key_ready = false;             /* drop anything already buffered */
+
+    if (prompt != NULL)
+        uart_puts(prompt);
+
+    while (!uart_key_ready)
+    {
+        if (!POWER_BUTTON_GetValue())   /* active low */
+        {
+            PowerDown();                /* a qualifying hold never comes back */
+            BI_LED_GREEN_SetHigh();
+            BI_LED_RED_SetLow();
+        }
+        ClrWdt();
+        __delay_ms(10);
+    }
+
+    uart_puts("\r\n");
+    return uart_key_byte;
+}
+
+
+/* ---- Operator menu -----------------------------------------------------
+ * STAGE 1: the menu and its dispatch are real, the actions are placeholders.
+ * Each handler just says what was chosen, so the menu, the key handling and
+ * the host echo can be proven before any test is moved into it.
+ *
+ * Selecting "load new image" prints JIG_PROMPT_LOAD, which is what
+ * rgs_bootload_BringUp.py watches for - it detaches its monitor and offers to
+ * flash. Nothing else in the firmware has to know about that.
+ *
+ * Anything unrecognised - including a bare Enter - simply redraws the menu,
+ * so there is no way to get stuck and no "invalid choice" nagging.
+ */
+/* Manual beam-break test. Break each beam in turn and check the matching
+ * laser lights. Runs until the operator presses Enter, then returns to the
+ * menu.
+ *
+ * Two changes from the version that lived in the fixed sequence:
+ *
+ *  - it exits on Enter rather than on BOTH beams being broken at once. The
+ *    old gesture needed two hands and could not be told apart from genuinely
+ *    testing both beams, so the operator could not leave without triggering
+ *    the thing being tested.
+ *
+ *  - it reports on a CHANGE of state, not every pass. The old loop printed
+ *    for as long as a beam was held, which buried everything else.
+ *
+ * Leaves the lasers off and the beam emitters back off on the way out, so a
+ * later test starts from a known state rather than inheriting this one's.
+ */
+static void test_beam_break(void)
+{
+    bool front_prev = false;
+    bool rear_prev  = false;
+    bool front_now, rear_now;
+
+    uart_puts("\r\n*** Manual beam break test ***\r\n"
+              "  Break each beam in turn - the matching laser should light.\r\n"
+              "  Hit Enter to return to the menu.\r\n\r\n");
+
+    BEAM_SetLow();                  /* emitters on (active low) */
+    uart_key_ready = false;         /* ignore anything typed before we started */
+
+    while (!uart_key_ready)
+    {
+        ClrWdt();
+
+        /* Keep hold-to-power-off available, as everywhere else that waits. */
+        if (!POWER_BUTTON_GetValue())
+        {
+            PowerDown();
+            BI_LED_GREEN_SetHigh();
+            BI_LED_RED_SetLow();
+        }
+
+        front_now = !FRONT_BALL_SENSE_GetValue();   /* active low = broken */
+        rear_now  = !REAR_BALL_SENSE_GetValue();
+
+        /* Lasers follow the sensors; low is lit. */
+        if (front_now) FRONT_LASER_PWM_SetLow(); else FRONT_LASER_PWM_SetHigh();
+        if (rear_now)  REAR_LASER_PWM_SetLow();  else REAR_LASER_PWM_SetHigh();
+
+        if (front_now != front_prev)
+        {
+            uart_puts(front_now ? "  FRONT beam broken\r\n"
+                                : "  FRONT beam clear\r\n");
+            front_prev = front_now;
+        }
+        if (rear_now != rear_prev)
+        {
+            uart_puts(rear_now ? "  REAR  beam broken\r\n"
+                               : "  REAR  beam clear\r\n");
+            rear_prev = rear_now;
+        }
+
+        __delay_ms(10);
+    }
+
+    FRONT_LASER_PWM_SetHigh();
+    REAR_LASER_PWM_SetHigh();
+    BEAM_SetHigh();
+
+    uart_puts("\r\n*** beam break test finished ***\r\n");
+}
+
+
+static void menu_show(void)
+{
+    uart_puts("\r\n"
+              "=========== RGS BringUp ===========\r\n"
+              "  0  Show all status\r\n"
+              "  1  Battery / gauge bring-up\r\n"
+              "  2  Toggle Front laser\r\n"
+              "  3  Toggle Rear laser\r\n"
+              "  4  Toggle Ball detect beam\r\n"
+              "  5  Toggle IR lights\r\n"
+              "  6  Manual beam-break test\r\n"
+              "  7  Test Level  1\r\n"
+              "  8  Calibrate Level\r\n"
+              "  9   TBD 3\r\n"
+              "                         \r\n"
+              "                         \r\n"
+              "  ---------------------- \r\n"
+              "  S  Save Settings\r\n"
+              "  L  Load Production image\r\n"
+              "  X  Exit and power down \r\n"
+              "===================================\r\n"
+              "Select (Enter to redraw): ");
+}
+
+#define MENU_ACTION_NONE      0     /* stay in the menu */
+#define MENU_ACTION_SEQUENCE  1     /* run the fixed sequence, as before */
+#define MENU_ACTION_LOAD      2     /* park and hand over for a firmware load */
+
+static uint8_t menu_dispatch(uint8_t key)
+{
+    switch (key)
+    {
+        case '1':
+        {
+            uart_puts("\r\n[TODO] battery / gauge bring-up\r\n");
+            
+        }
+        break;
+        
+        case '2': 
+        {
+           uart_puts("\r\nCheck Front laser toggles. Turn off when finished please!!!\r\n");  
+           FRONT_LASER_PWM_Toggle();
+        }
+        break;
+        
+        case '3': 
+        {
+           uart_puts("\r\nCheck rear laser toggles. Turn off when finished please!!!\r\n");  
+           REAR_LASER_PWM_Toggle();
+            
+        }
+        break;
+            
+    case '4':
+    {
+        uart_puts("\r\nCheck detection beam toggles. Switch it off when done\r\n");
+        BEAM_Toggle();
+    }
+    break;
+    case '5': 
+    {
+        uart_puts("\r\nCheck IR lights on, may need a phone camera to do this! Turn off when done !!!!\r\n");     
+        PWM_IR_Toggle();
+    }
+        break;
+        
+        
+    case '6':
+    {
+        test_beam_break();          /* returns when the operator hits Enter */
+    }
+    break;
+    
+     case '7':
+    {
+        //put the level test here    /* returns when the operator hits Enter */
+    }
+    break;
+    
+    
+    case '9': 
+        uart_puts("\r\n[TODO] write persistent config\r\n");    break;
+
+    /* Not a placeholder: runs everything exactly as it does today, so a pack
+     * can still be provisioned while the individual handlers above are being
+     * filled in. It ends in the park below and does not come back here. */
+    case '8': 
+        return MENU_ACTION_SEQUENCE;
+
+    case 'l':
+    case 'L': 
+        return MENU_ACTION_LOAD;
+
+    default:  break;                /* redraw, no complaint */
+    }
+    return MENU_ACTION_NONE;
+}
+
+/* Runs until the operator picks something that leaves the menu. */
+static uint8_t menu_run(void)
+{
+    uint8_t action;
+
+    for (;;)
+    {
+        menu_show();
+        action = menu_dispatch(uart_wait_key(NULL));
+        if (action != MENU_ACTION_NONE)
+            return action;
+    }
+}
+
+/* Final resting state: report the pack once, then sit on the handover prompt
+ * the host watches for. Never returns - the host resets us to load an image,
+ * or the operator powers the unit down with the button. */
+static void jig_park_for_load(void)
+{
+    BI_LED_GREEN_SetHigh();
+    BQ40Z50_ReportStatus();
+    uart_puts("\r\n" JIG_PROMPT_LOAD "\r\n");
+
+    for (;;)
+    {
+        if (!POWER_BUTTON_GetValue())      /* active low */
+        {
+            PowerDown();
+            /* Returned: hold was too short. Restore the verdict display,
+             * since PowerButton() borrowed the LEDs while counting. */
+            BI_LED_GREEN_SetHigh();
+            BI_LED_RED_SetLow();
+        }
+        ClrWdt();
+        __delay_ms(50);
+    }
 }
 
 
@@ -449,6 +753,31 @@ int main(void)
     IEC0bits.U1RXIE = 1;
 
     uart_puts("\r\nRGS BringUp jig: hello\r\n");
+
+    /* Jetson 5V rail UP for the whole jig session, before the menu is offered.
+     *
+     * The lasers, the beam and the IR emitters all hang off this rail, so with
+     * it low their control pins do nothing and a test looks broken when it is
+     * only unpowered. The cold-start path above deliberately leaves it LOW
+     * (line ~528) because a field unit must not power the Jetson until the
+     * user asks for it - a jig has no such requirement, and expecting each
+     * test to raise it individually just moves the trap around.
+     *
+     * The fixed sequence raises it again later; harmless, it is idempotent. */
+    JETSON_5V_ON_SetDigitalOutput();
+    JETSON_5V_ON_SetHigh();
+    __delay_ms(50);                 /* let the rail settle before anything drives it */
+
+    /* Operator menu. STAGE 1: only "8 - full sequence" and "L - load image"
+     * do anything; the individual tests are placeholders that report what was
+     * chosen. Moving each test out of the fixed sequence below and into its
+     * own handler is stage 2.
+     *
+     * Falls through to the fixed sequence on 8, so a pack can still be
+     * provisioned normally while that work is done. */
+    if (menu_run() == MENU_ACTION_LOAD)
+        jig_park_for_load();        /* never returns */
+
      BEAM_SetHigh();
 
     /* Free the bus before the first gauge access. The pack FETs stay latched
@@ -561,34 +890,8 @@ int main(void)
           
            
            
-       
-       uart_puts("\r\nGreen = good, red = bad, amber = don't know\r\n");
-      uart_puts("\r\n***************************************\r\n"); 
-      WDT_SafeDelay10thSecs(5);
-      uart_puts("\r\n************* switch on 5V  ******\r\n"); 
-      JETSON_5V_ON_SetHigh();
-      uart_puts("\r\nCheck ...Front Laser On........??\r\n");
-      FRONT_LASER_PWM_SetLow();
-      WDT_SafeDelay10thSecs(20);
-       uart_puts("\r\nCheck ...Front Laser Off........??\r\n");
-      FRONT_LASER_PWM_SetHigh();
-      WDT_SafeDelay10thSecs(20);
-        uart_puts("\r\nCheck ...Rear Laser On........??\r\n");
-      REAR_LASER_PWM_SetLow();
-      WDT_SafeDelay10thSecs(20);
-       uart_puts("\r\nCheck ...Rear Laser Off........??\r\n");
-      REAR_LASER_PWM_SetHigh();
-      WDT_SafeDelay10thSecs(20);
-       uart_puts("\r\nCheck ...Ball detect beam on........??\r\n");
-       BEAM_SetLow();
-       WDT_SafeDelay10thSecs(20);
-       uart_puts("\r\nCheck ...Ball detect beam off........??\r\n");
-       BEAM_SetHigh();
-       WDT_SafeDelay10thSecs(20);
-       uart_puts("\r\nCheck ...Check both IR lights ON.......??\r\n");
-       PWM_IR_SetHigh();
-       WDT_SafeDelay10thSecs(20);
-      
+    
+           
        
       
        uart_puts("\r\n***********************************\r\n");
@@ -652,22 +955,20 @@ int main(void)
               BI_LED_RED_SetHigh();
           } 
        
-      while(1)
-      {
-          if (!POWER_BUTTON_GetValue())      /* active low */
-          {
-              PowerDown();
-              /* Returned: hold was too short. Restore the verdict display,
-               * since PowerButton() borrowed the LEDs while counting. */
-              BI_LED_GREEN_SetHigh();
-              BI_LED_RED_SetLow();
-          }
-          BI_LED_GREEN_SetHigh();
-          BQ40Z50_ReportStatus();
-          WDT_SafeDelay10thSecs(30);
-          __delay_ms(150);
-          ClrWdt();
-      }
+      /* Bring-up is finished. Report the pack ONCE and then park on a single
+       * prompt, rather than repeating the battery report forever - the
+       * repetition scrolled anything interesting off the operator's screen.
+       *
+       * JIG_PROMPT_LOAD is the handover to the host: rgs_bootload_BringUp.py
+       * watches the line for this exact text, detaches its monitor and offers
+       * to flash a new image. The two strings must stay in step; if this one
+       * changes, change the marker in that script as well.
+       *
+       * Nothing is done with the operator's key press here - the host consumes
+       * it and takes over, raising JETSON_CALLING and sending RESET_DEVICE,
+       * which the UART interrupt above acts on. So this loop only has to stay
+       * alive and keep the power button working. */
+      jig_park_for_load();          /* never returns */
 
        }
     }                       /* jig loop: never exits */

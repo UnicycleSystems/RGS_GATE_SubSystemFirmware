@@ -96,7 +96,17 @@
 //                completes AND self-verify passes; and that the programmer
 //                readback is genuinely refused. ***
 #pragma config GWRP = OFF    //General Code Segment Write Protect->Writes to program memory are allowed (REQUIRED for bootloader RTSP)
-#pragma config GCP = ON    //General Code Segment Code Protect->Code READ protection enabled (IP protection; whole device)
+/* GCP OFF for development (2026-08-11). ON enables whole-device READ
+ * protection, which is what IP protection in the field wants - but it also
+ * stops the programmer reading flash back, so every re-programme fails
+ * verification with "expected <x>, got 0x00000000" once the first protected
+ * image is on the part. Zeros rather than 0xFFFFFF is the signature.
+ *
+ * This affects READ access only. Execution is unaffected, and so is the
+ * bootloader's self-programming, which depends on GWRP below (left OFF).
+ *
+ * Turn this back ON for production images. */
+#pragma config GCP = OFF    //General Code Segment Code Protect->Code read protection disabled
 #pragma config JTAGEN = OFF    //JTAG Port Enable->JTAG port is disabled
 
 #include "pin_manager.h"

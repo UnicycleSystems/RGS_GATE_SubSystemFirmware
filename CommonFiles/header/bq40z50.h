@@ -110,6 +110,16 @@
 #define BQ_DA_CELL_COUNT_MASK     0x03
 #define BQ_DA_CELL_COUNT_4S       0x03    /* CC1:CC0 = 1,1 = 4 cell */
 #define BQ_DA_NR                  (1u << 2) /* non-removable: ignore PRES pin */
+/* Allow the gauge to enter SLEEP. NOT used by the golden image - see the
+ * DA Config entry in bq40z50.c.
+ *
+ * Set in the R2 factory default (0x12), so leaving it out has to be done
+ * explicitly on every pack. FETs remain closed in SLEEP, but the gauge only
+ * wakes on load current above a threshold, on bus activity, or on charger
+ * insertion - so the small initial draw of a button press may not wake it,
+ * and the unit looks dead until it is briefly put on charge (2026-08-11).
+ * Named here so the golden value reads as intent rather than a magic 0x10. */
+#define BQ_DA_SLEEP               (1u << 4)
 
 typedef enum
 {

@@ -1,0 +1,33 @@
+      /* Park: keep displaying the pack verdict, and offer a way out.
+       * PowerDown() requires a qualifying ~900 ms hold (flashing the LEDs as
+       * feedback while it counts), then drops the Jetson rail and releases
+       * HOLD_PWR. If something external is still holding the rail up it forces
+       * a reset rather than leaving us latched-but-idle. A short press is
+       * ignored, so this cannot power off by accident. */
+       if (prov == BQ_PROV_NO)
+          {
+              BI_LED_GREEN_SetLow();
+              BI_LED_RED_SetHigh();
+          }
+          else if (prov != BQ_PROV_YES)      /* BQ_PROV_UNKNOWN */
+          {
+              BI_LED_GREEN_SetHigh();
+              BI_LED_RED_SetHigh();
+          } 
+       
+      while(1)
+      {
+          if (!POWER_BUTTON_GetValue())      /* active low */
+          {
+              PowerDown();
+              /* Returned: hold was too short. Restore the verdict display,
+               * since PowerButton() borrowed the LEDs while counting. */
+              BI_LED_GREEN_SetHigh();
+              BI_LED_RED_SetLow();
+          }
+          BI_LED_GREEN_SetHigh();
+          BQ40Z50_ReportStatus();
+          WDT_SafeDelay10thSecs(30);
+          __delay_ms(150);
+          ClrWdt();
+      }
