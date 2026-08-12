@@ -31,9 +31,11 @@
       <itemPath>../CommonFiles/header/address_block_lookup.h</itemPath>
       <itemPath>../CommonFiles/header/job_queue.h</itemPath>
       <itemPath>../CommonFiles/header/EEpromBlockLabels.h</itemPath>
+      <itemPath>../CommonFiles/header/MemoryMap.h</itemPath>
       <itemPath>../CommonFiles/header/persist_store.h</itemPath>
       <itemPath>../CommonFiles/header/flash.h</itemPath>
       <itemPath>../CommonFiles/header/pitchandroll.h</itemPath>
+      <itemPath>../CommonFiles/header/ArrayUtils.h</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
                    displayName="Important Files"
@@ -96,12 +98,14 @@
       <itemPath>../CommonFiles/source/persist_store.c</itemPath>
       <itemPath>../CommonFiles/source/flash.s</itemPath>
       <itemPath>../CommonFiles/source/pitchandroll.c</itemPath>
+      <itemPath>../CommonFiles/source/ArrayUtils.c</itemPath>
     </logicalFolder>
     <itemPath>firmware_version.h</itemPath>
   </logicalFolder>
   <sourceRootList>
     <Elem>.</Elem>
     <Elem>../CommonFiles/header</Elem>
+    <Elem>../CommonFiles/source</Elem>
   </sourceRootList>
   <projectmakefile>Makefile</projectmakefile>
   <confs>

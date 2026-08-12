@@ -30,6 +30,8 @@
 #include "../CommonFiles/header/persist_store.h"
 #include "firmware_version.h"
 #include "../CommonFiles/header/EEpromBlockLabels.h"
+#include "InitEEpromVals.h"
+#include "../CommonFiles/header/ArrayUtils.h"
 
 
 //accelerometer specific stuff....
@@ -117,6 +119,13 @@ bool queuepanic;
 I2C_WriteJob_t LoadJobFromEEprom;
 uint8_t JobIndex;
 
+// these are the calibration constants.
+//note that an int16 is very generous, but choosing to keep them in same type as raw vals.
+ int16_t xcal;
+ int16_t ycal;
+ int16_t zcal;
+ 
+ 
 
 /* Minimal UART1 string writer. UART1_Write() spins on a full TX buffer with
  * no ClrWdt(), which would be a reset loop in the bootloadable build, so wait
@@ -448,26 +457,25 @@ static void test_level(void)
      * lives in one place rather than being duplicated here. */
 
     uart_puts("  Raw counts and derived angles, once a second.\r\n"
-              "  Hit Enter to return to the menu.\r\n\r\n");
+              "  C to zero, Enter to return to the menu.\r\n\r\n");
 
     uart_key_ready = false;         /* ignore anything typed before we started */
 
-    while (!uart_key_ready)
+    for (;;)
     {
         int16_t x, y, z, pitch, roll;
 
         QuickAcellerometerGrabber();        /* refreshes [10..19] */
         
-      //  x=-x;
-      //  y=-y;
-      //  z=-z;
-        
+     
 
-        x     = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[10] << 8) | EMULATE_EEPROM_Memory[11]);
-        y     = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[12] << 8) | EMULATE_EEPROM_Memory[13]);
-        z     = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[14] << 8) | EMULATE_EEPROM_Memory[15]);
-        pitch = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[16] << 8) | EMULATE_EEPROM_Memory[17]);
-        roll  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[18] << 8) | EMULATE_EEPROM_Memory[19]);
+        x     = MAP_UnpackInt16(&EMULATE_EEPROM_Memory[Accl_X_LSB_Addr]);
+        y     = MAP_UnpackInt16(&EMULATE_EEPROM_Memory[Accl_Y_LSB_Addr]);
+        z     = MAP_UnpackInt16(&EMULATE_EEPROM_Memory[Accl_Z_LSB_Addr]);
+        
+        
+        pitch = MAP_UnpackInt16(&EMULATE_EEPROM_Memory[PitchLSB_Addr]);
+        roll  = MAP_UnpackInt16(&EMULATE_EEPROM_Memory[RollLSB_Addr]);
 
         uart_puts("  X=");      uart_put_int(x);
         uart_puts("  Y=");      uart_put_int(y);
@@ -476,7 +484,7 @@ static void test_level(void)
         uart_puts("  roll=");   uart_put_deg(roll);
         uart_puts(" deg\r\n");
 
-        /* One second, but in 10 ms steps so Enter is acted on straight away
+        /* One second, but in 10 ms steps so a key is acted on straight away
          * rather than up to a second later, and the power button stays live. */
         for (i = 0; i < 100u && !uart_key_ready; i++)
         {
@@ -488,6 +496,64 @@ static void test_level(void)
             }
             ClrWdt();
             __delay_ms(10);
+        }
+
+        if (uart_key_ready)
+        {
+            uint8_t key = uart_key_byte;
+
+            uart_key_ready = false;     /* consume it, ready for the next one */
+
+            if (key == 'c' || key == 'C')
+            {
+                /* Take the current attitude as level.
+                 *
+                 * ACCUMULATE, do not replace. x/y/z here come from
+                 * EMULATE_EEPROM_Memory, and QuickAcellerometerGrabber()
+                 * already added the existing calibration before storing them
+                 * - so they are corrected values, not raw.
+                 *
+                 * Wanted: a new calibration C' with raw + C' == 0. Since
+                 * raw = x - C, that gives C' = C - x, i.e. subtract the
+                 * displayed value from what is already there.
+                 *
+                 * Writing `xcal = -x` instead zeroes against an
+                 * already-corrected reading: the first press works, the
+                 * second discards the correction (x reads ~0, so the new cal
+                 * becomes ~0) and the readings jump back toward raw by
+                 * whatever noise was present. This form is idempotent -
+                 * pressing C twice without moving the board changes nothing.
+                 */
+                xcal = (int16_t)(xcal - x);
+                ycal = (int16_t)(ycal - y);
+
+                /* Z is deliberately NOT zeroed. It carries the 1g reference
+                 * that pitch and roll are measured AGAINST - nulling it
+                 * removes the very thing being measured. atan2(y, z) with z
+                 * near zero is ill-conditioned, and roll flips to +/-180 on
+                 * noise; it also accumulated toward the int16 limit (32147
+                 * seen on the bench, against a 32767 ceiling) and wrapped.
+                 *
+                 * Cancelling mounting tilt only needs the horizontal
+                 * components: with X and Y nulled at level, pitch and roll
+                 * both read zero and Z keeps its full magnitude, so the
+                 * angles stay well conditioned right through to 90 degrees.
+                 *
+                 * zcal is forced to zero rather than left alone, so a stale
+                 * value stored by an earlier build cannot be loaded back at
+                 * start-up and quietly reintroduce the fault. */
+                zcal = 0;
+
+                MAP_PackInt16(xcal, &EMULATE_EEPROM_Memory[Accl_CalX_LSB_Addr]);
+                MAP_PackInt16(ycal, &EMULATE_EEPROM_Memory[Accl_CalY_LSB_Addr]);
+                MAP_PackInt16(zcal, &EMULATE_EEPROM_Memory[Accl_CalZ_LSB_Addr]);
+
+                uart_puts("\r\n  zeroed\r\n\r\n");
+
+                continue;               /* stay in the test */
+            }
+
+            break;                      /* Enter, or anything else: leave */
         }
     }
 
@@ -829,8 +895,14 @@ int main(void)
     RCONbits.POR = 0;
     RCONbits.BOR = 0;
 
-
-   
+    // pull the correction values for the accelerometer
+    // shouldn't change unless recalled, so only do this once
+    // but remember to force update them IF a cal update job is done in the app!!
+    
+    
+     xcal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalX_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalX_LSB_Addr]);
+     ycal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalY_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalY_LSB_Addr]);
+     zcal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalZ_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalZ_LSB_Addr]);
     
     FrontSensorOff;
     RearSensorOff;
@@ -866,13 +938,7 @@ int main(void)
     
    // in due course, add a bit of non-vol and init all at start up.
    
-    EMULATE_EEPROM_Memory[4] = (uint8_t)(0x00);  // Most significant byte
-    EMULATE_EEPROM_Memory[5] = (uint8_t)(0xF4);
-    EMULATE_EEPROM_Memory[6] = (uint8_t)(0x24);
-    EMULATE_EEPROM_Memory[7] = (uint8_t)(0x00);
-    
-    EMULATE_EEPROM_Memory[FirmwareVersionAddr] = FIRMWARE_REV_LSB;
-    EMULATE_EEPROM_Memory[FirmwareVersionAddr-1] = FIRMWARE_REV_MSB;
+
 
    // INTERRUPT_TO_JETSON_SetLow();
     RestoreDetect();
@@ -1374,6 +1440,21 @@ void QuickAcellerometerGrabber(void)
         
         if (LIS2DW12_ReadXYZ_I2C2(&y, &x, &z)) // note unconventional axis sequence)
         {
+            
+            //apply the corrections
+            
+            /* Mounting-tilt cancellation, horizontal components only.
+             *
+             * Z is NOT corrected: it carries the 1g reference that pitch and
+             * roll are measured against, so offsetting it makes atan2(y, z)
+             * ill-conditioned - roll flips to +/-180 on noise once z nears
+             * zero - and the accumulated offset runs into the int16 limit.
+             * Nulling X and Y is enough to make a level board read zero on
+             * both angles. zcal is kept only so a stored value can be read
+             * back and inspected; it is not applied. */
+            x=x+xcal;
+            y=y+ycal;
+            
         /* ...and negate Z. Not cosmetic: the sensor reads about -1g on Z with
          * the board level, while atan2(y, z) in ComputePitchRoll() needs z
          * POSITIVE when level. It also restores handedness - the X/Y swap
@@ -1382,41 +1463,39 @@ void QuickAcellerometerGrabber(void)
          * as soon as the board is tilted. Swap plus one negation is
          * determinant +1, a real rotation. If "positive roll" turns out to
          * mean the wrong direction, negate all three instead - also +1. */
-        z = (int16_t)(-z);
-        uint16_t ux = (uint16_t)x;
-        uint16_t uy = (uint16_t)y;
-        uint16_t uz = (uint16_t)z;
+     
+            
+            z = (int16_t)(-z);
+        
        
+       
+
         
-        // Pack as [X_H, X_L, Y_H, Y_L, Z_H, Z_L]
-        EMULATE_EEPROM_Memory[10]  = (uint8_t)(ux >> 8);
-         EMULATE_EEPROM_Memory[11] = (uint8_t)(ux);
-         EMULATE_EEPROM_Memory[12] = (uint8_t)(uy >> 8);
-         EMULATE_EEPROM_Memory[13] = (uint8_t)(uy);
-         EMULATE_EEPROM_Memory[14] = (uint8_t)(uz >> 8);
-         EMULATE_EEPROM_Memory[15] = (uint8_t)(uz);
-        
+        // Pack as [X_L, X_H, Y_L, Y_H, Z_L, Z_H]
+        MAP_PackInt16(x, &EMULATE_EEPROM_Memory[Accl_X_LSB_Addr]);
+        MAP_PackInt16(y, &EMULATE_EEPROM_Memory[Accl_Y_LSB_Addr]);
+        MAP_PackInt16(z, &EMULATE_EEPROM_Memory[Accl_Z_LSB_Addr]);
+     
          
          
             /* use raw counts; scale later if needed */
         }
         else // if it fubars, then just fill with 0xFF;
+            // 0xFF picked as zero is a plausible free -fall condition
         {
-         EMULATE_EEPROM_Memory[10]  = 0xFF;
-         EMULATE_EEPROM_Memory[11] = 0xFF;
-         EMULATE_EEPROM_Memory[12] = 0xFF;
-         EMULATE_EEPROM_Memory[13] =0xFF;;
-         EMULATE_EEPROM_Memory[14] =0xFF;
-         EMULATE_EEPROM_Memory[15] =0xFF; 
+         EMULATE_EEPROM_Memory[Accl_X_LSB_Addr]  = 0xFF;
+         EMULATE_EEPROM_Memory[Accl_X_MSB_Addr] = 0xFF;
+         EMULATE_EEPROM_Memory[Accl_Y_LSB_Addr] = 0xFF;
+         EMULATE_EEPROM_Memory[Accl_Y_MSB_Addr] =0xFF;;
+         EMULATE_EEPROM_Memory[Accl_Z_LSB_Addr] =0xFF;
+         EMULATE_EEPROM_Memory[Accl_Z_MSB_Addr] =0xFF; 
         }
        ComputePitchRoll(x,y,z,&pitch,&roll);
-        uint16_t upitch = (uint16_t)pitch;
-    uint16_t uroll  = (uint16_t)roll;
-    
-       EMULATE_EEPROM_Memory[16] = (uint8_t)(upitch >> 8);
-       EMULATE_EEPROM_Memory[17] = (uint8_t)(upitch);
-       EMULATE_EEPROM_Memory[18] = (uint8_t)(uroll >> 8);
-       EMULATE_EEPROM_Memory[19] = (uint8_t)(uroll);
+      
+       MAP_PackInt16(pitch, &EMULATE_EEPROM_Memory[PitchLSB_Addr]);
+       MAP_PackInt16(roll, &EMULATE_EEPROM_Memory[RollLSB_Addr]);
+   
+       
 }
 
 //refactor into a general purpose button thing...

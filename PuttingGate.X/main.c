@@ -28,7 +28,7 @@
 #include "../CommonFiles/header/persist_store.h"
 #include "firmware_version.h"
 #include "../CommonFiles/header/EEpromBlockLabels.h"
-
+#include "../CommonFiles/header/ArrayUtils.h"
 
 
 //accelerometer specific stuff....
@@ -167,6 +167,11 @@ bool queuepanic;
 I2C_WriteJob_t LoadJobFromEEprom;
 uint8_t JobIndex;
  bool charged;
+ 
+ 
+ int16_t xcal;
+ int16_t ycal;
+ int16_t zcal;
 
 int main(void)
 {
@@ -337,8 +342,11 @@ int main(void)
 #ifdef RunPOST
      POST_Routine();
 #endif
-   
-    
+   //pull in the accelerometer cal values.
+     xcal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalX_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalX_LSB_Addr]);
+     ycal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalY_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalY_LSB_Addr]);
+     zcal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalZ_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalZ_LSB_Addr]);
+       
     FrontSensorOff;
     RearSensorOff;
     IFS1bits.T5IF = false;
@@ -769,8 +777,35 @@ void QuickAcellerometerGrabber(void)
    
         ClrWdt();
         int16_t x, y, z;
-        if (LIS2DW12_ReadXYZ_I2C2(&x, &y, &z)) 
+
+        /* Re-align the sensor to the frame ComputePitchRoll() expects:
+         *      x = sensorY,  y = sensorX,  z = -sensorZ
+         *
+         * The accelerometer is on the underside of the PCB, so it sits
+         * upside down with its Y toward the rear and X to the right - hence
+         * the swapped arguments below.
+         *
+         * The Z negation is not cosmetic. The sensor reads about -1g on Z
+         * with the board level, while atan2(y, z) needs z POSITIVE when
+         * level. It also keeps the frame right-handed: the X/Y swap on its
+         * own has determinant -1, a mirror rather than a rotation, which
+         * reads correctly while level (both swapped axes ~0) and goes wrong
+         * as soon as the board is tilted. Swap plus one negation is
+         * determinant +1, a real rotation.
+         *
+         * MUST match RGS_BringUp's copy of this function - same sensor, same
+         * board. There was a `roll_deg += 180` inside ComputePitchRoll()
+         * compensating for the missing remap here; it has been removed, so
+         * without this PuttingGate would read roll near +/-180 when level. */
+        if (LIS2DW12_ReadXYZ_I2C2(&y, &x, &z))
         {
+            
+        //apply the corrections
+            
+            x=x-xcal;
+            y=y-ycal;
+            z=z-zcal;      
+        z = (int16_t)(-z);
         uint16_t ux = (uint16_t)x;
         uint16_t uy = (uint16_t)y;
         uint16_t uz = (uint16_t)z;

@@ -81,10 +81,13 @@ extern "C" {
  // Note that this is in reverse order (counting down)from 127. This is to allow empty space between 
  // the low and high order tables, useable by a change in either.
 #define TableVersionAddr   127
-#define TableVersionNumBytes 1    
+#define TableVersionNumBytes 1   
+
        
 #define FirmwareVersionAddr (TableVersionAddr - TableVersionNumBytes)
 #define FirmwareVersionNumBytes 2
+#define FirmwareVersionMSB FirmwareVersionAddr
+#define FirmwareVersionLSB  ( FirmwareVersionMSB - 1 )
 
 #define HardwareVersionAddr (FirmwareVersionAddr - FirmwareVersionNumBytes)
 #define HardwareVersionNumBytes 2
@@ -92,11 +95,28 @@ extern "C" {
 #define TicksPerSecondAddr (HardwareVersionAddr - HardwareVersionNumBytes)  // the conversion factor to turn TransitTimeTicks into seconds 
 #define TicksPerSecondNumBytes 4
     
+ #define TicksPerSecMMSB  TicksPerSecondAddr
+ #define TicksPerSecNMSB  ( TicksPerSecMMSB - 1 )
+#define TicksPerSecHLSB  ( TicksPerSecNMSB - 1 )
+#define TicksPerSecLLSB  ( TicksPerSecHLSB - 1 )
+    
 #define LaserStateAddr (TicksPerSecondAddr - TicksPerSecondNumBytes)  // the conversion factor to turn TransitTimeTicks into seconds 
 #define LaserStateNumBytes 1   
     
-#define IRLevelAddr (LaserStateAddr - LaserStateNumBytes)  // the conversion factor to turn TransitTimeTicks into seconds 
-#define IRLevelNumBytes 1  
+#define IRLevelAddr (LaserStateAddr - LaserStateNumBytes)  
+#define IRLevelNumBytes 1 
+ 
+    
+ //Accelerometer Cal co-efficients
+#define Accel_Cal_Addr (IRLevelAddr - IRLevelNumBytes)
+#define Accel_Cal_NumBytes 6
+       
+#define Accl_CalZ_MSB_Addr Accel_Cal_Addr
+#define Accl_CalZ_LSB_Addr (Accl_CalZ_MSB_Addr - 1)
+#define Accl_CalY_MSB_Addr ( Accl_CalZ_LSB_Addr - 1)
+#define Accl_CalY_LSB_Addr (Accl_CalY_MSB_Addr -1 )   
+#define Accl_CalX_MSB_Addr ( Accl_CalY_LSB_Addr - 1)
+#define Accl_CalX_LSB_Addr (Accl_CalX_MSB_Addr -1 )    
     
 
     

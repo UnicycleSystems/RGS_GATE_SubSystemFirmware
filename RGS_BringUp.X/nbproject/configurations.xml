@@ -34,9 +34,12 @@
       <itemPath>firmware_version.h</itemPath>
       <itemPath>../CommonFiles/header/bq40z50.h</itemPath>
       <itemPath>../CommonFiles/header/EEpromBlockLabels.h</itemPath>
+      <itemPath>../CommonFiles/header/MemoryMap.h</itemPath>
       <itemPath>../CommonFiles/header/persist_store.h</itemPath>
       <itemPath>../CommonFiles/header/flash.h</itemPath>
       <itemPath>../CommonFiles/header/pitchandroll.h</itemPath>
+      <itemPath>InitEEpromVals.h</itemPath>
+      <itemPath>../CommonFiles/header/ArrayUtils.h</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
                    displayName="Important Files"
@@ -101,11 +104,14 @@
       <itemPath>../CommonFiles/source/persist_store.c</itemPath>
       <itemPath>../CommonFiles/source/flash.s</itemPath>
       <itemPath>../CommonFiles/source/pitchandroll.c</itemPath>
+      <itemPath>InitEEpromVals.c</itemPath>
+      <itemPath>../CommonFiles/source/ArrayUtils.c</itemPath>
     </logicalFolder>
   </logicalFolder>
   <sourceRootList>
     <Elem>.</Elem>
     <Elem>../CommonFiles/header</Elem>
+    <Elem>../CommonFiles/source</Elem>
   </sourceRootList>
   <projectmakefile>Makefile</projectmakefile>
   <confs>
@@ -527,6 +533,8 @@
         <property key="memories.programmemory" value="true"/>
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="poweroptions.powerenable" value="false"/>
+        <property key="programmerToGoFilePath"
+                  value="C:/Users/Peter/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_BringUp.X/debug/default/RGS_BringUp_ptg"/>
         <property key="programmerToGoImageName" value="RGS_BringUp_ptg"/>
         <property key="programoptions.donoteraseauxmem" value="false"/>
         <property key="programoptions.eraseb4program" value="true"/>
@@ -565,7 +573,7 @@
         <targetDevice>PIC24FJ64GA004</targetDevice>
         <targetHeader></targetHeader>
         <targetPluginBoard></targetPluginBoard>
-        <platformTool>pk4hybrid</platformTool>
+        <platformTool>ICD4Tool</platformTool>
         <languageToolchain>XC16</languageToolchain>
         <languageToolchainVersion>2.10</languageToolchainVersion>
         <platform>3</platform>
@@ -1053,6 +1061,8 @@
         <property key="memories.programmemory" value="true"/>
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="poweroptions.powerenable" value="true"/>
+        <property key="programmerToGoFilePath"
+                  value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_BringUp.X/debug/standalone/RGS_BringUp_ptg"/>
         <property key="programmerToGoImageName" value="RGS_BringUp_ptg"/>
         <property key="programoptions.donoteraseauxmem" value="false"/>
         <property key="programoptions.eraseb4program" value="true"/>
