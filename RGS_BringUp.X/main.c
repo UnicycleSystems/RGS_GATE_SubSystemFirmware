@@ -350,6 +350,151 @@ static uint8_t uart_wait_key(const char *prompt)
  * Anything unrecognised - including a bare Enter - simply redraws the menu,
  * so there is no way to get stuck and no "invalid choice" nagging.
  */
+/* ---- Small number formatting -------------------------------------------
+ * There is no stdio in this build and sprintf would drag in far more than a
+ * couple of readouts justify, so these do the job directly.
+ */
+static void uart_put_int(int32_t v)
+{
+    char    buf[12];
+    uint8_t n = 0;
+    uint32_t u;
+
+    if (v < 0)
+    {
+        uart_putb('-');
+        u = (uint32_t)(-v);
+    }
+    else
+    {
+        u = (uint32_t)v;
+    }
+
+    do
+    {
+        buf[n++] = (char)('0' + (u % 10u));
+        u /= 10u;
+    } while (u);
+
+    while (n)
+        uart_putb((uint8_t)buf[--n]);
+}
+
+/* ComputePitchRoll() returns 8192 counts per 180 degrees (pitchandroll.c), so
+ * one count is about 0.022 degrees. Print degrees to one decimal place using
+ * integer maths only: tenths = raw * 1800 / 8192. */
+static void uart_put_deg(int16_t raw)
+{
+    int32_t tenths = ((int32_t)raw * 1800) / 8192;
+    int32_t whole  = tenths / 10;
+    int32_t frac   = tenths % 10;
+
+    if (frac < 0)
+        frac = -frac;
+
+    /* -0.4 would print as "0.4" without this: the sign lives in the whole
+     * part, which is zero. */
+    if (tenths < 0 && whole == 0)
+        uart_putb('-');
+
+    uart_put_int(whole);
+    uart_putb('.');
+    uart_put_int(frac);
+}
+
+
+/* Level test. Reads the accelerometer once a second and prints the raw counts
+ * alongside the derived pitch and roll, until the operator presses Enter.
+ *
+ * QuickAcellerometerGrabber() returns nothing - it leaves its results in
+ * EMULATE_EEPROM_Memory, raw XYZ at [10..15] and pitch/roll at [16..19], each
+ * big-endian - so they are read back out from there rather than duplicating
+ * the read.
+ *
+ * Initialises the accelerometer itself: the call in the fixed sequence is
+ * commented out, so nothing else does, and a test that depends on having been
+ * reached a particular way is exactly what this menu is meant to get away
+ * from.
+ */
+static void test_level(void)
+{
+    uint8_t i;
+
+    uart_puts("\r\n*** Level test ***\r\n");
+
+    if (!LIS2DW12_Init_I2C2())
+    {
+        uart_puts("  ** accelerometer did not initialise - check I2C2 and the\r\n"
+                  "     device address (this build uses LIS_ADDR_1, 0x19) **\r\n");
+        uart_puts("  Hit Enter to return to the menu.\r\n");
+        uart_key_ready = false;
+        while (!uart_key_ready)
+        {
+            if (!POWER_BUTTON_GetValue())
+            {
+                PowerDown();
+                BI_LED_GREEN_SetHigh();
+                BI_LED_RED_SetLow();
+            }
+            ClrWdt();
+            __delay_ms(10);
+        }
+        return;
+    }
+    /* No direct sensor read here: the loop below calls
+     * QuickAcellerometerGrabber() and reads the results back out of
+     * EMULATE_EEPROM_Memory, so this test shows exactly what the Jetson sees
+     * over I2C - which is the thing worth verifying - and the axis re-mapping
+     * lives in one place rather than being duplicated here. */
+
+    uart_puts("  Raw counts and derived angles, once a second.\r\n"
+              "  Hit Enter to return to the menu.\r\n\r\n");
+
+    uart_key_ready = false;         /* ignore anything typed before we started */
+
+    while (!uart_key_ready)
+    {
+        int16_t x, y, z, pitch, roll;
+
+        QuickAcellerometerGrabber();        /* refreshes [10..19] */
+        
+      //  x=-x;
+      //  y=-y;
+      //  z=-z;
+        
+
+        x     = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[10] << 8) | EMULATE_EEPROM_Memory[11]);
+        y     = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[12] << 8) | EMULATE_EEPROM_Memory[13]);
+        z     = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[14] << 8) | EMULATE_EEPROM_Memory[15]);
+        pitch = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[16] << 8) | EMULATE_EEPROM_Memory[17]);
+        roll  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[18] << 8) | EMULATE_EEPROM_Memory[19]);
+
+        uart_puts("  X=");      uart_put_int(x);
+        uart_puts("  Y=");      uart_put_int(y);
+        uart_puts("  Z=");      uart_put_int(z);
+        uart_puts("   pitch="); uart_put_deg(pitch);
+        uart_puts("  roll=");   uart_put_deg(roll);
+        uart_puts(" deg\r\n");
+
+        /* One second, but in 10 ms steps so Enter is acted on straight away
+         * rather than up to a second later, and the power button stays live. */
+        for (i = 0; i < 100u && !uart_key_ready; i++)
+        {
+            if (!POWER_BUTTON_GetValue())
+            {
+                PowerDown();
+                BI_LED_GREEN_SetHigh();
+                BI_LED_RED_SetLow();
+            }
+            ClrWdt();
+            __delay_ms(10);
+        }
+    }
+
+    uart_puts("\r\n*** level test finished ***\r\n");
+}
+
+
 /* Manual beam-break test. Break each beam in turn and check the matching
  * laser lights. Runs until the operator presses Enter, then returns to the
  * menu.
@@ -499,7 +644,7 @@ static uint8_t menu_dispatch(uint8_t key)
     
      case '7':
     {
-        //put the level test here    /* returns when the operator hits Enter */
+        test_level();               /* returns when the operator hits Enter */
     }
     break;
     
@@ -1214,8 +1359,30 @@ void QuickAcellerometerGrabber(void)
    
         ClrWdt();
         int16_t x, y, z;
-        if (LIS2DW12_ReadXYZ_I2C2(&x, &y, &z)) 
+        
+        // with reference to my notes in the 'compute pitch and roll', copied below
+         // x,y,z are as 'text book' ,ie
+    //X is 'forward' Z is down, Y is 'right'
+    //not aligned to the accelerometer
+    // 
+        //so we need to correct for the orientation of the device on the PCB
+        // the physical axis, related back to the accelerometer
+        // current hardware, this is on the bottom side, so 'upside down'
+        // Y 'points to the rear, X points right
+        // thus we need to swap x and y
+        // if we do this in the calling function, everything else shoud be fine
+        
+        if (LIS2DW12_ReadXYZ_I2C2(&y, &x, &z)) // note unconventional axis sequence)
         {
+        /* ...and negate Z. Not cosmetic: the sensor reads about -1g on Z with
+         * the board level, while atan2(y, z) in ComputePitchRoll() needs z
+         * POSITIVE when level. It also restores handedness - the X/Y swap
+         * above has determinant -1, a mirror rather than a rotation, which
+         * reads correctly while level (both swapped axes ~0) and goes wrong
+         * as soon as the board is tilted. Swap plus one negation is
+         * determinant +1, a real rotation. If "positive roll" turns out to
+         * mean the wrong direction, negate all three instead - also +1. */
+        z = (int16_t)(-z);
         uint16_t ux = (uint16_t)x;
         uint16_t uy = (uint16_t)y;
         uint16_t uz = (uint16_t)z;
