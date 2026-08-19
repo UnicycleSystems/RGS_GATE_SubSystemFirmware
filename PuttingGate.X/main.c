@@ -338,10 +338,6 @@ int main(void)
     RCONbits.POR = 0;
     RCONbits.BOR = 0;
 
-  // #define RunPOST
-#ifdef RunPOST
-     POST_Routine();
-#endif
    //pull in the accelerometer cal values.
      xcal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalX_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalX_LSB_Addr]);
      ycal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalY_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalY_LSB_Addr]);
@@ -374,11 +370,12 @@ int main(void)
     uint32_t DebugTime;
   
   // set the 'ticks per second
-   
-    EMULATE_EEPROM_Memory[4] = (uint8_t)(0x00);  // Most significant byte
-    EMULATE_EEPROM_Memory[5] = (uint8_t)(0xF4);
-    EMULATE_EEPROM_Memory[6] = (uint8_t)(0x24);
-    EMULATE_EEPROM_Memory[7] = (uint8_t)(0x00);
+ 
+ 
+    EMULATE_EEPROM_Memory[TicksPerSecMMSB] = (uint8_t)(0x00);  // Most significant byte
+    EMULATE_EEPROM_Memory[TicksPerSecNMSB] = (uint8_t)(0xF4);
+    EMULATE_EEPROM_Memory[TicksPerSecHLSB] = (uint8_t)(0x24);
+    EMULATE_EEPROM_Memory[TicksPerSecLLSB] = (uint8_t)(0x00);
 
     /* Restore the configuration saved by the factory bring-up jig. Placed
      * AFTER the hardcoded setters above so the stored values win (those
@@ -389,7 +386,9 @@ int main(void)
      *
      * Returns false on a blank device (never brought up), leaving the defaults
      * above in place. That is not an error. */
-    PERSIST_LoadToEeprom();
+    
+    
+   // PERSIST_LoadToEeprom();
 
     EMULATE_EEPROM_Memory[FirmwareVersionAddr] = FIRMWARE_REV_LSB;
     EMULATE_EEPROM_Memory[FirmwareVersionAddr-1] = FIRMWARE_REV_MSB;
@@ -402,33 +401,28 @@ int main(void)
 
   //BI_LED_RED_SetHigh();BI_LED_RED is RED!!!!!
   BI_LED_GREEN_SetHigh(); //BI_LED_GREEN is green!!!!
-   for(bugout=0;bugout<10;bugout++)
+   for(bugout=0;bugout<5;bugout++)
             {
                 //changes this to flashing red light
                 BI_LED_GREEN_Toggle();  
                 BI_LED_RED_Toggle();
-                __delay_ms(50); 
+                __delay_ms(10); 
                 BI_LED_GREEN_Toggle();  
                 BI_LED_RED_Toggle();
-                __delay_ms(150); 
+                __delay_ms(30); 
                 ClrWdt();
                 // restore green light
                 BI_LED_GREEN_SetHigh();//Turn on Green LED
                 BI_LED_RED_SetLow();//Turn off Red LED
             }
-  
-//#define PWR_BUTT_LAUNCH_TEST
+  PWM_IR_SetHigh();
+
     while(1)
     {   
-       
-        
+      
        if(!POWER_BUTTON_GetValue())
-#ifdef  PWR_BUTT_LAUNCH_TEST
-            LaunchTest();
-#else
-         
-             PowerDown();
-#endif
+         PowerDown();
+
           if(DoTask) //this is set periodically by the TMR2 interrupt. Nominally 1 second.
              {
               if(SelfResetTimeout)
@@ -911,11 +905,11 @@ uint8_t PowerButton (bool OnOff)
 
        BI_LED_GREEN_SetHigh();//Turn on Green LED
        BI_LED_RED_SetLow();//Turn off Red LED
-      __delay_ms(100);
+      __delay_ms(20);
       BI_LED_RED_SetHigh();//Turn on Red LED
       BI_LED_GREEN_SetLow();//Turn off Green LED
-      __delay_ms(50);
-      if (ButtonPressHold>5)
+      __delay_ms(10);
+      if (ButtonPressHold>10)
       {
           ButtonPassed=1;
 

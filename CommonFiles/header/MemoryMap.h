@@ -75,7 +75,7 @@ extern "C" {
   ******************************************************/
  
     
-    
+/*    // oop- ... re-defined   TODO: delete the below #defines when all cleaned up
 #define FirmwareVersionAddr ReadOnlyStart    // Firmware version on the camera board. two bytes, Major,minor
 #define FirmwareVersionLen 2                 // Firmware version is the first thing in memory. 
     
@@ -87,7 +87,7 @@ extern "C" {
     
 #define BallSpeeedAddr (TransitTimeAddr + TransitTimeLen + 1)   //Calculated Ball speed
 #define BallSpeedLen 4   // assumed 4 bytes, not yet implemented
-    
+*/    
     
     
     

@@ -95,6 +95,8 @@ void SetLasers()
     
     //Note logic APPEARS inverted, due to dual transistor drivers
   uint8_t LaserState;
+ 
+  
   LaserState=EMULATE_EEPROM_Memory[ConfigLasersAddr];
  
   if (LaserState&0x01)
@@ -111,6 +113,13 @@ void SetLasers()
       BEAM_SetLow();
   else
       BEAM_SetHigh();
+  /*
+   if (LaserState&0x08)
+       PWM_IR_SetHigh();
+  else
+       PWM_IR_SetLow();
+  */
+  
   
   //update memory Note that this is NOT where it was read from.
   //the purpose is to ensure that the jetson MAY  verify the change.

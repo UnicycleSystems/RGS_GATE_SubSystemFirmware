@@ -2,8 +2,8 @@
 #define FIRMWARE_VERSION_H
 
 
-#define FIRMWARE_REV_MSB        1
-#define FIRMWARE_REV_LSB        05
+#define FIRMWARE_REV_MSB        3
+#define FIRMWARE_REV_LSB        0
 
 
 

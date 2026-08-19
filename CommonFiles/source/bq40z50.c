@@ -1176,9 +1176,32 @@ void BQ40Z50_ReportStatus(void)
     {
         bq_dbg_da_config = da;
         bq_print_hex(da, 2);
-        bq_print((da & BQ_DA_CELL_COUNT_MASK) == BQ_DA_CELL_COUNT_4S
-                 ? "  4 cell" : "  NOT 4 cell");
-        bq_print_line((da & BQ_DA_NR) ? ", non-removable" : ", REMOVABLE");
+
+        /* Break the byte out field by field. Only the bits whose meaning has
+         * been confirmed against the R2 TRM are named; the rest are shown as
+         * a raw value rather than guessed at, so a surprise there is visible
+         * instead of silently mislabelled. */
+        bq_print("  [CC=");
+        bq_print_u16((uint16_t)((da & BQ_DA_CELL_COUNT_MASK) + 1u));
+        bq_print(" cell");
+        if ((da & BQ_DA_CELL_COUNT_MASK) != BQ_DA_CELL_COUNT_4S)
+            bq_print(" **NOT 4**");
+
+        bq_print((da & BQ_DA_NR) ? ", NR=1 non-removable"
+                                 : ", NR=0 REMOVABLE (uses PRES pin)");
+
+        /* SLEEP is deliberately OFF in the golden image - a dozing gauge does
+         * not reliably wake on the small load of a button press. It IS set in
+         * the R2 factory default (0x12), so seeing it here means the part has
+         * not been provisioned by this firmware. */
+        bq_print((da & BQ_DA_SLEEP) ? ", SLEEP=1 (unexpected)"
+                                    : ", SLEEP=0");
+
+        bq_print(", other bits=");
+        bq_print_hex((uint32_t)(da & (uint8_t)~(BQ_DA_CELL_COUNT_MASK |
+                                                BQ_DA_NR |
+                                                BQ_DA_SLEEP)), 2);
+        bq_print_line("]");
     }
     else
         bq_print_fail();

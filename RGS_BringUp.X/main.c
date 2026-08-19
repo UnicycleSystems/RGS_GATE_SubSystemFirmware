@@ -634,23 +634,171 @@ static void test_beam_break(void)
 }
 
 
+/* ---- EV2400 passive mode -------------------------------------------------
+ *
+ * Hands the local SMBus over to an EV2400 so bqStudio can characterise the
+ * pack, while this PIC stays powered and keeps the rails latched up.
+ *
+ * The PIC cannot simply be switched off for this. The SMBus pull-ups sit on
+ * our own 3V3 rail, so an unpowered board presents no bus at all - and an
+ * EV2400 driving SCL/SDA into a dead board back-feeds 3V3 through the RB2/RB3
+ * clamp diodes, partially powering the chip through two signal pins. Powered
+ * but electrically absent is the only workable state.
+ *
+ * ORDER MATTERS getting off the bus: while I2CEN is set the module owns
+ * RB2/RB3 regardless of TRIS, so the module must be disabled BEFORE the pins
+ * are made inputs. Doing it the other way round looks right and does nothing.
+ *
+ * Safe to enter straight from the menu: every BQ40Z50 access is main line -
+ * nothing touches the gauge from an interrupt - so no transaction can be in
+ * flight when the module goes down.
+ */
+static void i2c2_bus_release(void)
+{
+    I2C2CONbits.I2CEN = 0;          /* first, or RB2/RB3 stay with the module */
+
+    IEC3bits.MI2C2IE = 0;           /* leave nothing able to restart it */
+    IEC3bits.SI2C2IE = 0;
+    IFS3bits.MI2C2IF = 0;
+    IFS3bits.SI2C2IF = 0;
+
+    SDA_LOCAL_SetDigitalInput();    /* RB2 */
+    SCL__LOCAL_SetDigitalInput();   /* RB3 */
+
+    /* No pull-up work required: pin_manager clears CNPU1/CNPU2 wholesale and
+     * re-enables only CN16 and CN21, neither of which is RB2 or RB3. */
+}
+
+/* Parks with the bus released. DOES NOT RETURN.
+ *
+ * This has to survive a full learning cycle - realistically 12 to 24 hours
+ * including the relaxation periods - so the loop does nothing but clear the
+ * watchdog and count. A watchdog reset partway through a bqStudio data flash
+ * write would re-init I2C2 and drive the bus mid-transaction, corrupting the
+ * write and losing the run.
+ *
+ * There is deliberately NO keystroke escape. Two reasons:
+ *
+ *  - a stray byte on the debug UART must not be able to end a twenty hour
+ *    characterisation, and
+ *
+ *  - powering down is the only exit that cannot put two masters on the bus.
+ *    bqStudio polls continuously while connected, so any path that re-enabled
+ *    I2C2 on a live board would risk the PIC driving into an EV2400
+ *    transaction. Dropping the rails removes us from the bus for good.
+ *
+ * The cost, and it matters: the EV2400 MUST be unwired BEFORE the rails drop.
+ * An EV2400 driving SCL/SDA into an unpowered board back-feeds 3V3 through the
+ * RB2/RB3 clamp diodes - precisely the failure this mode exists to avoid.
+ */
+static void ev2400_passive_mode(void)
+{
+    uint16_t ticks   = 0;           /* ~10 ms each */
+    uint16_t minutes = 0;
+
+    uart_puts("\r\n*** EV2400 passive mode ***\r\n"
+              "  Releasing the local SMBus to the EV2400.\r\n"
+              "  Wire SCL, SDA and GND only - leave EV2400 VCC disconnected,\r\n"
+              "  this board supplies the rail and the bus pull-ups.\r\n"
+              "\r\n"
+              "  Loads can be switched while parked, to measure combinations:\r\n"
+              "    2 front laser   3 rear laser   4 ball beam   5 IR lights\r\n"
+              "\r\n"
+              "  There is NO keyboard exit. This mode ends only at power down.\r\n"
+              "  To finish: UNWIRE THE EV2400 FIRST, then hold the power button.\r\n"
+              "  Unwiring first matters - an EV2400 left driving the bus into an\r\n"
+              "  unpowered board back-feeds 3V3 through the PIC clamp diodes.\r\n\r\n");
+
+    i2c2_bus_release();
+
+    /* Both lines should now float high on our own 3V3 pull-ups. Either one
+     * reading low means something is still holding the bus down, and the
+     * EV2400 will not get on it - worth knowing before waiting 20 hours. */
+    uart_puts("  SDA (RB2) reads ");
+    uart_puts(SDA_LOCAL_GetValue()  ? "HIGH\r\n" : "LOW  ** still held **\r\n");
+    uart_puts("  SCL (RB3) reads ");
+    uart_puts(SCL__LOCAL_GetValue() ? "HIGH\r\n" : "LOW  ** still held **\r\n");
+    uart_puts("\r\n  bus released - parked until power down\r\n");
+
+    uart_key_ready = false;         /* drop anything typed before we started */
+
+    for (;;)
+    {
+        /* The only way out. PowerButton() wants a qualifying ~900 ms hold, so
+         * a knock cannot end the run; a short hold just falls through here. */
+        if (!POWER_BUTTON_GetValue())          /* active low */
+        {
+            PowerDown();                       /* a qualifying hold never returns */
+            BI_LED_GREEN_SetHigh();            /* too short - PowerButton had the LEDs */
+            BI_LED_RED_SetLow();
+        }
+
+        /* Load switching, so one park can walk through several combinations
+         * instead of costing a power cycle each. Same keys as the menu.
+         *
+         * None of these touch I2C2, so the bus stays released - which is also
+         * why keys are safe here at all: the worst a stray byte can do is
+         * flip a laser, where a keyed EXIT would have ended the run. The
+         * marker lines matter as much as the toggles, since they are what
+         * lines a step up against the current trace in the bqStudio log. */
+        if (uart_key_ready)
+        {
+            switch (uart_key_byte)
+            {
+                case '2': FRONT_LASER_PWM_Toggle(); uart_puts("  > front laser\r\n"); break;
+                case '3': REAR_LASER_PWM_Toggle();  uart_puts("  > rear laser\r\n");  break;
+                case '4': BEAM_Toggle();            uart_puts("  > ball beam\r\n");   break;
+                case '5': PWM_IR_Toggle();          uart_puts("  > IR lights\r\n");   break;
+                default:  break;                    /* ignored - no exit by key */
+            }
+            uart_key_ready = false;                 /* re-arm the ISR capture */
+        }
+
+        ClrWdt();
+        __delay_ms(10);
+
+        /* Liveness tick, and the tell-tale for the thing this mode has to
+         * avoid: if the elapsed count ever restarts from zero, the PIC reset
+         * while parked and whatever bqStudio was doing is suspect. */
+        if (++ticks >= 6000u)
+        {
+            ticks = 0;
+            minutes++;
+            uart_puts("  parked, ");
+            uart_put_int((int32_t)minutes);
+            uart_puts(" min\r\n");
+        }
+    }
+}
+
+
 static void menu_show(void)
 {
     uart_puts("\r\n"
-              "=========== RGS BringUp ===========\r\n"
+              "=========== RGS BringUp ===========\r\n");
+    uart_puts("-----------             -----------\r\n");
+    uart_puts("------------ Version "); 
+    uart_put_int(FIRMWARE_REV_MSB);
+    uart_puts(".");
+    uart_put_int(FIRMWARE_REV_LSB);
+    uart_puts(" ----------\r\n");
+    
+     uart_puts("--- Use with App V3.0 and up ----\r\n"
+              "-----------------------------------\r\n"
               "  0  Show all status\r\n"
-              "  1  Battery / gauge bring-up\r\n"
+              "  1  Battery Minimal Function - NOT production\r\n"
               "  2  Toggle Front laser\r\n"
               "  3  Toggle Rear laser\r\n"
               "  4  Toggle Ball detect beam\r\n"
               "  5  Toggle IR lights\r\n"
               "  6  Manual beam-break test\r\n"
               "  7  Test Level  1\r\n"
-              "  8  Calibrate Level\r\n"
+              "  8  Load battery pack production Image\r\n"
               "  9   TBD 3\r\n"
               "                         \r\n"
               "                         \r\n"
               "  ---------------------- \r\n"
+              "  E  EV2400 passive mode (release SMBus)\r\n"
               "  S  Save Settings\r\n"
               "  L  Load Production image\r\n"
               "  X  Exit and power down \r\n"
@@ -666,10 +814,82 @@ static uint8_t menu_dispatch(uint8_t key)
 {
     switch (key)
     {
+        
+        case '0':
+        {
+          BQ40Z50_ReportStatus(); 
+        }
+        break;
+        /* MINIMUM functional bring-up. Deliberately NOT a characterised
+         * image: this is the fixed configuration that makes a pack work at
+         * all - 4 cell, non-removable, SLEEP off, FETs on and persistent,
+         * design capacity and voltage - and nothing else. No Qmax, no Ra
+         * tables, no learned gauging.
+         *
+         * The point is that a pack can be made functional in the lab or on
+         * the line with no golden image available, so an app can be loaded
+         * and the unit used. Gauging accuracy comes later, from case 8.
+         *
+         * Naming trap: the function called below is ApplyGoldenImage(), but
+         * the table it writes IS this minimum configuration - the name
+         * predates the split between "minimum config" and "characterised
+         * image". It is the right call despite reading wrongly.
+         *
+         * Returns to the menu rather than parking, unlike case 8, because
+         * the next step here is normally "now load an app". The pack is
+         * left UNSEALED - sealing is a production end step. */
         case '1':
         {
-            uart_puts("\r\n[TODO] battery / gauge bring-up\r\n");
-            
+            uint8_t   bad = 0, unset = 0;
+            BQ_STATUS st;
+
+            uart_puts("\r\n*** Minimum battery pack bring-up ***\r\n"
+                      "  Fixed configuration only - no gauging data.\r\n\r\n");
+
+            /* Free the bus first. A slave left holding SDA survives a PIC
+             * reset, because the pack FETs keep every I2C2 device powered. */
+            if (!BQ40Z50_BusUnwedge())
+            {
+                uart_puts("  ** I2C2 BUS STUCK - nothing attempted **\r\n");
+                break;
+            }
+
+            /* Everything that is not data flash: probe, unseal, gauge reset,
+             * FET enable. The unseal is what makes the writes below legal, so
+             * this has to run first even on a pack that only needs one byte. */
+            st = BQ40Z50_BringUp();
+            if (st != BQ_OK)
+                uart_puts("  (bring-up reported errors - continuing anyway)\r\n");
+
+            /* The fixed config table. Writes only what is already wrong and
+             * re-reads each entry it touches. */
+            if (BQ40Z50_ApplyGoldenImage() != BQ_OK)
+                uart_puts("  ** one or more config writes FAILED **\r\n");
+
+            /* Independent read-back is the verdict - not the write status. */
+            BQ40Z50_VerifyGoldenImage(&bad, &unset);
+
+            uart_puts("\r\n  ---- minimum bring-up result ----\r\n");
+            if (bad != 0)
+            {
+                uart_puts("  ** FAILED ** entries wrong or unreadable: ");
+                uart_put_int((int32_t)bad);
+                uart_puts("\r\n  Pack is NOT safe to ship or fit.\r\n");
+            }
+            else if (unset != 0)
+            {
+                uart_puts("  INCOMPLETE - verified so far, but ");
+                uart_put_int((int32_t)unset);
+                uart_puts(" value(s) unconfigured.\r\n");
+            }
+            else
+            {
+                uart_puts("  OK - minimum configuration verified.\r\n"
+                          "  Pack is functional. NOT gauge-characterised.\r\n");
+            }
+
+            BQ40Z50_ReportGoldenImage();
+            uart_puts("\r\n*** minimum bring-up finished ***\r\n");
         }
         break;
         
@@ -715,8 +935,23 @@ static uint8_t menu_dispatch(uint8_t key)
     break;
     
     
-    case '9': 
-        uart_puts("\r\n[TODO] write persistent config\r\n");    break;
+   case 'e':
+   case 'E':
+   {
+        ev2400_passive_mode();      /* never returns - ends at power down */
+   }
+   break;
+
+   case 's':
+   case 'S':
+   {
+         uart_puts("\r\n  attempting to save settings .....\r\n");
+        if (PERSIST_SaveFromEeprom())
+            uart_puts("\r\n  settings saved\r\n");
+        else
+         uart_puts("\r\n  ** SAVE FAILED **\r\n");
+   }
+    break;
 
     /* Not a placeholder: runs everything exactly as it does today, so a pack
      * can still be provisioned while the individual handlers above are being
@@ -895,15 +1130,13 @@ int main(void)
     RCONbits.POR = 0;
     RCONbits.BOR = 0;
 
-    // pull the correction values for the accelerometer
-    // shouldn't change unless recalled, so only do this once
-    // but remember to force update them IF a cal update job is done in the app!!
-    
-    
-     xcal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalX_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalX_LSB_Addr]);
-     ycal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalY_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalY_LSB_Addr]);
-     zcal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalZ_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalZ_LSB_Addr]);
-    
+    /* The accelerometer correction values are NOT read here any more. They
+     * live in EMULATE_EEPROM_Memory, which is not populated from the
+     * persistent store until PERSIST_LoadToEeprom() runs further down - so
+     * reading them at this point picked up zeros, and a saved calibration
+     * never reached QuickAcellerometerGrabber(). They are read immediately
+     * after the restore instead. */
+
     FrontSensorOff;
     RearSensorOff;
     IFS1bits.T5IF = false;
@@ -965,6 +1198,76 @@ int main(void)
 
     uart_puts("\r\nRGS BringUp jig: hello\r\n");
 
+    /* Establish EMULATE_EEPROM_Memory: restore it if this board has been
+     * provisioned before, otherwise build it from the coded defaults.
+     *
+     * PERSIST_LoadToEeprom() returns false only when NEITHER bank validates -
+     * magic, length and CRC must all agree, and erased flash reads 0xFFFF, so
+     * a never-written board is rejected deterministically rather than
+     * probabilistically. In that case it leaves the register file untouched,
+     * so InitEmulatedEEprom() defines everything.
+     *
+     * Placed here rather than earlier because UART1 only comes up a few lines
+     * above - SYSTEM_Initialize() leaves it commented out - and which branch
+     * was taken is worth reporting.
+     *
+     * NOTE: once a board has a valid bank, InitEmulatedEEprom() never runs
+     * again, so a default added to it later will not reach already-provisioned
+     * units. If that becomes a problem, put a format/version byte in the block
+     * and re-run the init when it does not match what this firmware expects. */
+    if (PERSIST_LoadToEeprom())
+    {
+        uart_puts("Persistent config: restored from flash\r\n");
+    }
+    else
+    {
+        uart_puts("Persistent config: none stored - applying defaults\r\n");
+        InitEmulatedEEprom();
+    }
+
+    /* Stamp the RUNNING firmware version over whatever was restored. The
+     * version lives inside the mirrored block, so a provisioned board would
+     * otherwise report the version that was current when it was provisioned.
+     * InitEmulatedEEprom() writes these too, but only on the defaults path. */
+    EMULATE_EEPROM_Memory[FirmwareVersionMSB] = FIRMWARE_REV_MSB;
+    EMULATE_EEPROM_Memory[FirmwareVersionLSB] = FIRMWARE_REV_LSB;
+
+    /* Pull the accelerometer corrections into the working variables, now that
+     * the register file holds either the restored block or the defaults.
+     *
+     * This MUST stay after the load. It used to sit ~120 lines earlier, where
+     * it read zeros because nothing had populated EMULATE_EEPROM_Memory yet -
+     * a saved calibration was written to flash correctly and restored
+     * correctly, but never reached QuickAcellerometerGrabber(), so a
+     * calibrated board still read its raw mounting offset after a restart.
+     *
+     * If a cal-update job is ever added to the app, it must refresh these too
+     * - writing the bytes alone is not enough. */
+    xcal = MAP_UnpackInt16(&EMULATE_EEPROM_Memory[Accl_CalX_LSB_Addr]);
+    ycal = MAP_UnpackInt16(&EMULATE_EEPROM_Memory[Accl_CalY_LSB_Addr]);
+    zcal = MAP_UnpackInt16(&EMULATE_EEPROM_Memory[Accl_CalZ_LSB_Addr]);
+
+    /* Provision a blank board straight away so it is never left unsaved. On a
+     * board that was restored this finds nothing to do and writes nothing -
+     * flash endurance is finite and a jig is power-cycled far more often than
+     * a field unit. The operator's "save settings" menu item covers changes
+     * made during the session.
+     *
+     * The write blocks for ~30 ms with interrupts unserviced. Safe here - it
+     * is before the jig loop and nothing is mid-transaction. */
+    if (!PERSIST_EepromMatchesStore())
+    {
+        if (PERSIST_SaveFromEeprom())
+            uart_puts("Persistent config: WRITTEN\r\n");
+        else
+            uart_puts("Persistent config: ** WRITE FAILED **\r\n");
+    }
+    else
+    {
+        uart_puts("Persistent config: already up to date\r\n");
+    }
+
+
     /* Jetson 5V rail UP for the whole jig session, before the menu is offered.
      *
      * The lasers, the beam and the IR emitters all hang off this rail, so with
@@ -1000,32 +1303,6 @@ int main(void)
     else
         uart_puts("I2C2 bus unwedge: BUS STILL STUCK\r\n");
 
-    /* Factory bring-up: commit EMULATE_EEPROM_Memory (set from the hardcoded
-     * values earlier in main) to persistent flash, where it survives a
-     * bootloader update and is restored by the field application at every
-     * boot. Placed here rather than beside those values because UART1 only
-     * comes up a few lines above - SYSTEM_Initialize() leaves it commented
-     * out - and the result is worth reporting.
-     *
-     * Load first so the shadow holds whatever is already stored, then write
-     * only when the block has actually changed: a jig is power-cycled far more
-     * often than a field unit and flash endurance is finite. A blank device
-     * never matches, so the first run on a new board always provisions.
-     *
-     * The write blocks for ~30 ms with interrupts unserviced. Safe here - it
-     * is before the jig loop and nothing is mid-transaction. */
-    PERSIST_Load();
-    if (!PERSIST_EepromMatchesStore())
-    {
-        if (PERSIST_SaveFromEeprom())
-            uart_puts("Persistent config: WRITTEN\r\n");
-        else
-            uart_puts("Persistent config: ** WRITE FAILED **\r\n");
-    }
-    else
-    {
-        uart_puts("Persistent config: already up to date\r\n");
-    }
 
     /* BRING-UP JIG: repeat the report forever (green LED heartbeat between
      * runs) so a serial monitor attached at any time sees it within a few
