@@ -1,0 +1,11 @@
+hex files for the bootloader stub code now come in two flavours,
+'charger compulsory' and 'charger not compulsory'
+functionally, they are identical, and indeed built from the same code base,
+with the exception that 'charger compulsory' versions require the charger to be plugged in
+to permit an update ,whereas "charger not compulsory' will attempt an update 
+without charger plugged in
+These two variants have their own sub directory, appropriately named
+
+
+Thus hex files will have a suffix 'CC' or 'CNC' following the version number.
+

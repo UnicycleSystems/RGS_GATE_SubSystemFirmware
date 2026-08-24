@@ -34,7 +34,38 @@
 #define BQ_MAC_SEAL_DEVICE        0x0030
 #define BQ_MAC_DEVICE_RESET       0x0041
 #define BQ_MAC_SAFETY_STATUS      0x0051
+#define BQ_MAC_PF_STATUS          0x0053  /* permanent failure - sticky */
 #define BQ_MAC_OPERATION_STATUS   0x0054
+#define BQ_MAC_CHARGING_STATUS    0x0055  /* WHY charge is inhibited - see the
+                                           * BQ_CHG_* flags below. */
+
+/* ChargingStatus (MAC 0x0055) flags. THREE bytes, not four - reading it with
+ * BQ40Z50_ReadMAC32() fails, because that rejects anything shorter than 4.
+ *
+ * Bit map from the BQ40Z50-R2 TRM, SLUUBK0B section 14.1.41.
+ * Bits 23-20 and bit 7 are reserved.
+ *
+ * IN and SU are the two that mean "this pack will not charge". The voltage
+ * region (PV/LV/MV/HV) and temperature band (UT..OT) say why. */
+#define BQ_CHG_NCT   0x080000ul   /* near charge termination           */
+#define BQ_CHG_CCC   0x040000ul   /* charging loss compensation        */
+#define BQ_CHG_CVR   0x020000ul   /* charging voltage rate of change   */
+#define BQ_CHG_CCR   0x010000ul   /* charging current rate of change   */
+#define BQ_CHG_VCT   0x008000ul   /* charge termination                */
+#define BQ_CHG_MCHG  0x004000ul   /* maintenance charge                */
+#define BQ_CHG_SU    0x002000ul   /* SUSPEND charge                    */
+#define BQ_CHG_IN    0x001000ul   /* charge INHIBIT                    */
+#define BQ_CHG_HV    0x000800ul   /* high voltage region               */
+#define BQ_CHG_MV    0x000400ul   /* mid voltage region                */
+#define BQ_CHG_LV    0x000200ul   /* low voltage region                */
+#define BQ_CHG_PV    0x000100ul   /* precharge voltage region          */
+#define BQ_CHG_OT    0x000040ul   /* overtemperature                   */
+#define BQ_CHG_HT    0x000020ul   /* high temperature                  */
+#define BQ_CHG_STH   0x000010ul   /* standard temperature high         */
+#define BQ_CHG_RT    0x000008ul   /* recommended temperature           */
+#define BQ_CHG_STL   0x000004ul   /* standard temperature low          */
+#define BQ_CHG_LT    0x000002ul   /* low temperature                   */
+#define BQ_CHG_UT    0x000001ul   /* under temperature                 */
 #define BQ_MAC_MANUFACTURING_STATUS 0x0057
 
 #define BQ_DEVICE_TYPE_EXPECTED   0x4500
@@ -54,6 +85,73 @@
 #define BQ_OP_PCHG                (1ul << 3)
 #define BQ_OP_XDSG                (1ul << 13)
 #define BQ_OP_XCHG                (1ul << 14)
+
+/* Remaining OperationStatus flags, TRM SLUUBK0B section 14.1.40.
+ * Bits 31-30, 6 and 4 are reserved.
+ *
+ * FUSE is the one worth shouting about: a latched fuse drive holds every FET
+ * off with SafetyStatus completely CLEAR, which reads as "no fault" while
+ * nothing works. XCHG likewise - charging disabled with no protection set. */
+#define BQ_OP_FUSE                (1ul << 5)    /* latched fuse drive        */
+#define BQ_OP_BTP_INT             (1ul << 7)    /* battery trip point intr   */
+#define BQ_OP_SEC_MASK            (3ul << 8)    /* 01=full access 10=unsealed
+                                                 * 11=sealed                */
+#define BQ_OP_SDV                 (1ul << 10)   /* shutdown, low pack volts  */
+#define BQ_OP_SS                  (1ul << 11)   /* any SafetyStatus bit set  */
+#define BQ_OP_PF                  (1ul << 12)   /* permanent failure         */
+#define BQ_OP_SLEEP               (1ul << 15)   /* SLEEP conditions met      */
+#define BQ_OP_SDM                 (1ul << 16)   /* shutdown via command      */
+#define BQ_OP_LED                 (1ul << 17)
+#define BQ_OP_AUTH                (1ul << 18)   /* authentication running    */
+#define BQ_OP_AUTOCALM            (1ul << 19)
+#define BQ_OP_CAL                 (1ul << 20)
+#define BQ_OP_CAL_OFFSET          (1ul << 21)
+#define BQ_OP_XL                  (1ul << 22)   /* 400 kHz SMBus             */
+#define BQ_OP_SLEEPM              (1ul << 23)   /* SLEEP via command         */
+#define BQ_OP_INIT                (1ul << 24)   /* init after full reset     */
+#define BQ_OP_SMBLCAL             (1ul << 25)
+#define BQ_OP_SLPAD               (1ul << 26)
+#define BQ_OP_SLPCC               (1ul << 27)
+#define BQ_OP_CB                  (1ul << 28)   /* cell balancing active     */
+#define BQ_OP_EMSHUT              (1ul << 29)   /* emergency FET shutdown    */
+
+/* SBS commands used by the status report. Current() and friends are SIGNED:
+ * negative is discharge. */
+#define BQ_CMD_CURRENT            0x0A    /* int16, mA                       */
+#define BQ_CMD_RSOC               0x0D    /* uint16, %                       */
+#define BQ_CMD_FULL_CHG_CAPACITY  0x10    /* uint16, mAh                     */
+#define BQ_CMD_CHARGING_CURRENT   0x14    /* uint16, mA  - what the gauge is */
+#define BQ_CMD_CHARGING_VOLTAGE   0x15    /* uint16, mV    ASKING the charger
+                                           * for. Zero here means the pack is
+                                           * refusing charge outright.       */
+#define BQ_CMD_BATTERY_STATUS     0x16    /* uint16, alarm and status bits   */
+
+/* Advanced Charging Algorithm data flash. Addresses from the R2 TRM
+ * SLUUBK0B data flash summary.
+ *
+ * TEMPERATURES ARE STORED IN 0.1 K, not degrees C - the parameter tables in
+ * section 15.4 quote degrees, the address table does not. Convert with
+ * (raw - 2732)/10. The hysteresis is a DELTA, so it has no 2732 offset.
+ *
+ * Nothing in bq_golden[] writes any of these, so a pack that has only been
+ * through BringUp is sitting on the factory defaults noted below. */
+#define BQ_DF_T1_TEMP             0x4A0B  /* 2732 = 0 C   UT/LT boundary     */
+#define BQ_DF_T2_TEMP             0x4A0D  /* 2852 = 12 C  LT/STL             */
+#define BQ_DF_T5_TEMP             0x4A0F  /* 2932 = 20 C  STL/RT             */
+#define BQ_DF_T6_TEMP             0x4A11  /* 2982 = 25 C  RT/STH             */
+#define BQ_DF_T3_TEMP             0x4A13  /* 3032 = 30 C  STH/HT             */
+#define BQ_DF_T4_TEMP             0x4A15  /* 3282 = 55 C  HT/OT              */
+#define BQ_DF_TEMP_HYSTERESIS     0x4A17  /* 10   = 1.0 C delta              */
+#define BQ_DF_CHGV_LOW_TEMP       0x4A19  /* 4000 mV                         */
+#define BQ_DF_CHGV_STD_LOW        0x4A21  /* 4200 mV                         */
+#define BQ_DF_CHGV_STD_HIGH       0x4A29  /* 4200 mV                         */
+#define BQ_DF_CHGV_HIGH_TEMP      0x4A31  /* 4000 mV - BELOW a full cell     */
+#define BQ_DF_CHGV_REC_TEMP       0x4A39  /* 4100 mV                         */
+#define BQ_DF_PRECHARGE_START_MV  0x4A45  /* 2500 mV                         */
+#define BQ_DF_CHG_VOLTAGE_LOW     0x4A47  /* 2900 mV  LV region              */
+#define BQ_DF_CHG_VOLTAGE_MED     0x4A49  /* 3600 mV  MV region              */
+#define BQ_DF_CHG_VOLTAGE_HIGH    0x4A4B  /* 4000 mV  HV region              */
+#define BQ_DF_CHG_VOLTAGE_HYST    0x4A4D  /* 0 mV, ONE byte - no deadband    */
 
 /* Data flash */
 #define BQ_DF_DA_CONFIGURATION    0x4A7D  /* 1 byte */

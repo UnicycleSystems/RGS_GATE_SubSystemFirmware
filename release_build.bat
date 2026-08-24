@@ -12,7 +12,10 @@ REM                                                 ...\BringUp\Default
 REM   3. PuttingGate        standalone + default -> ...\PuttingGate\Standalone
 REM                                                 ...\PuttingGate\Default
 REM   4. Combined bootloader + BringUp default   -> ...\BringUp\Combined
-REM   5. Empties C:\SubSystemFirmware\Production and puts the fresh
+REM   5. Empties C:\SubSystemFirmware\BringUp_FirstRun and puts that same
+REM      combined image there - the one file a virgin board gets programmed
+REM      with, so the folder must never offer a choice
+REM   6. Empties C:\SubSystemFirmware\Production and puts the fresh
 REM      PuttingGate DEFAULT build there
 REM
 REM Naming: <Project>_<CFG>_<maj>_<min>.hex, CFG = SA (standalone) or DF
@@ -49,6 +52,7 @@ set "MAKEBIN=C:\Program Files\Microchip\MPLABX\v6.25\gnuBins\GnuWin32\bin"
 set "HEXMATE=C:\Program Files\Microchip\MPLABX\v6.25\mplab_platform\bin\hexmate.exe"
 set "DEST=C:\SubSystemFirmware\PreviousReleasedHexFiles"
 set "PROD=C:\SubSystemFirmware\Production"
+set "FIRSTRUN=C:\SubSystemFirmware\BringUp_FirstRun"
 
 if not exist "%MAKEBIN%\make.exe" ( echo ERROR: make.exe not found in "%MAKEBIN%" & exit /b 1 )
 if not exist "%HEXMATE%"          ( echo ERROR: hexmate not found: "%HEXMATE%"    & exit /b 1 )
@@ -104,11 +108,26 @@ if errorlevel 1 ( echo     ERROR: hexmate failed & exit /b 1 )
 echo     -^> %DEST%\BringUp\Combined\%COMBINED%
 echo.
 
-REM ---- 5. refresh the Production folder --------------------------------------
+REM ---- 5. refresh the BringUp_FirstRun folder --------------------------------
+REM The same combined image as step 4, but as the ONE file a virgin board gets
+REM programmed with. Emptied first for the same reason as Production below: a
+REM folder that is meant to answer "which image?" must not offer a choice.
+REM
+REM The archive copy in step 4 keeps the history; this one is disposable and
+REM always the latest, so it is deleted rather than archived.
+echo [5] refreshing %FIRSTRUN%
+if not exist "%FIRSTRUN%" mkdir "%FIRSTRUN%"
+del /Q "%FIRSTRUN%\*" 2>nul
+copy /Y "%DEST%\BringUp\Combined\%COMBINED%" "%FIRSTRUN%\%COMBINED%" >nul
+if errorlevel 1 ( echo     ERROR: copy to BringUp_FirstRun failed & exit /b 1 )
+echo     -^> %FIRSTRUN%\%COMBINED%
+echo.
+
+REM ---- 6. refresh the Production folder --------------------------------------
 REM Emptied first, deliberately: Production holds exactly one image, the field
 REM application, and a stale second file there is worse than none.
 set "PGNAME=RGS_PuttingGate_DF_%PGVER%.hex"
-echo [5] refreshing %PROD%
+echo [6] refreshing %PROD%
 if not exist "%PROD%" mkdir "%PROD%"
 del /Q "%PROD%\*" 2>nul
 copy /Y "%ROOT%PuttingGate.X\dist\default\production\PuttingGate.X.production.hex" "%PROD%\%PGNAME%" >nul
@@ -119,7 +138,8 @@ echo.
 echo ============================================================
 echo  Release build complete.
 echo    bootloader v%BOOTVER:_=.%   BringUp v%BRINGVER:_=.%   PuttingGate v%PGVER:_=.%
-echo    Production now holds %PGNAME%
+echo    BringUp_FirstRun now holds %COMBINED%
+echo    Production       now holds %PGNAME%
 echo ============================================================
 endlocal
 exit /b 0
@@ -131,12 +151,30 @@ REM Version text is taken LITERALLY, so an author-written leading zero
 REM survives: MSB 1 / LSB 00 gives "1_00", not "1_0".
 REM ===========================================================================
 :getver
-set "_MSB=" & set "_LSB="
+set "_MSB=" & set "_LSB=" & set "_NM=0" & set "_NL=0"
 if not exist "%~1" ( echo ERROR: %~1 not found & exit /b 1 )
-for /f "tokens=3" %%A in ('findstr /C:"#define FIRMWARE_REV_MSB" "%~1"') do set "_MSB=%%A"
-for /f "tokens=3" %%A in ('findstr /C:"#define FIRMWARE_REV_LSB" "%~1"') do set "_LSB=%%A"
-if "!_MSB!"=="" ( echo ERROR: no FIRMWARE_REV_MSB in %~1 & exit /b 1 )
-if "!_LSB!"=="" ( echo ERROR: no FIRMWARE_REV_LSB in %~1 & exit /b 1 )
+
+REM /B anchors the match to the START of the line, so a commented-out
+REM "//#define FIRMWARE_REV_MSB 3" is no longer matched.
+REM
+REM Without /B, findstr matched the comment as well, the for loop assigned on
+REM EVERY match, and the LAST one won - so a stale commented-out value
+REM silently overrode the real one and the hex was published under a version
+REM nobody had set. It went unnoticed because Bootloader_V2 has no such
+REM comment, so that one file always looked right.
+REM
+REM Counting first, and demanding exactly one, means a second ACTIVE define
+REM is an error rather than a coin toss - the compiler would take the last,
+REM this used to take the last, and neither is something to rely on.
+for /f %%A in ('findstr /B /C:"#define FIRMWARE_REV_MSB" "%~1" ^| find /c /v ""') do set "_NM=%%A"
+for /f %%A in ('findstr /B /C:"#define FIRMWARE_REV_LSB" "%~1" ^| find /c /v ""') do set "_NL=%%A"
+if not "!_NM!"=="1" ( echo ERROR: expected exactly ONE active FIRMWARE_REV_MSB in %~1 - found !_NM! & exit /b 1 )
+if not "!_NL!"=="1" ( echo ERROR: expected exactly ONE active FIRMWARE_REV_LSB in %~1 - found !_NL! & exit /b 1 )
+
+for /f "tokens=3" %%A in ('findstr /B /C:"#define FIRMWARE_REV_MSB" "%~1"') do set "_MSB=%%A"
+for /f "tokens=3" %%A in ('findstr /B /C:"#define FIRMWARE_REV_LSB" "%~1"') do set "_LSB=%%A"
+if "!_MSB!"=="" ( echo ERROR: could not read FIRMWARE_REV_MSB from %~1 & exit /b 1 )
+if "!_LSB!"=="" ( echo ERROR: could not read FIRMWARE_REV_LSB from %~1 & exit /b 1 )
 set "%~2=!_MSB!_!_LSB!"
 exit /b 0
 

@@ -542,7 +542,18 @@ BQ_STATUS BQ40Z50_EnsureDAConfig(uint8_t *da_config_out)
     if (st != BQ_OK)
         return st;
 
-    target = (uint8_t)((current & ~BQ_DA_CELL_COUNT_MASK) |
+    /* Clear SLEEP as well as forcing cell count and NR.
+     *
+     * This used to preserve every bit it did not care about, which on a
+     * factory part reading 0x12 produced 0x17 - SLEEP still set. The golden
+     * image then wrote 0x07 to clear it, so the END state was right, but only
+     * if both writers ran. Anything interrupting between them left a pack with
+     * SLEEP enabled, which is exactly the failure that a mid-sequence gauge
+     * reset used to cause.
+     *
+     * Both writers now agree on 0x07. See the DA Config entry in bq_golden[]
+     * for why SLEEP is off for this product. */
+    target = (uint8_t)(((current & ~BQ_DA_CELL_COUNT_MASK) & ~BQ_DA_SLEEP) |
                        BQ_DA_CELL_COUNT_4S | BQ_DA_NR);
     if (da_config_out != NULL)
         *da_config_out = target;
@@ -782,19 +793,34 @@ BQ_STATUS BQ40Z50_BringUp(void)
     }
     bq_dbg_step = 3;
 
-    /* Once per jig boot: reset the gauge to drop any latched FUSE drive or
-     * stale protection state left from before provisioning (a latched FUSE
-     * holds every FET off even with SafetyStatus clear). All our settings
-     * reload from data flash, so the reset costs nothing. Safe on the bench:
-     * the board is not powered through the pack FETs. */
+    /* Reset the gauge ONLY when something is actually stuck.
+     *
+     * A latched FUSE drive holds every FET off with SafetyStatus clear, and a
+     * DEVICE_RESET is the cure - but on this board the reset is not free.
+     * EVERYTHING is powered downstream of the pack FETs, so resetting the
+     * gauge drops the FETs and takes our own 3V3 rail with it. The PIC reboots
+     * part way through this sequence and NOTHING after this point runs.
+     *
+     * That is what an unconditional reset here was doing: menu 1 powered the
+     * unit down before reaching the unseal, so DA Config was never written and
+     * packs came back still reading SLEEP=1. It could not even self-correct on
+     * a second attempt, because the RAM static that made it once-per-boot is
+     * itself cleared by the reboot it causes.
+     *
+     * (The comment that used to sit here claimed the board was NOT powered
+     * through the pack FETs. That was wrong, and this is what it cost.) */
     {
-        static bool gauge_reset_done = false;
-        if (!gauge_reset_done)
+        uint32_t op_now = 0;
+
+        if (BQ40Z50_ReadMAC32(BQ_MAC_OPERATION_STATUS, &op_now) == BQ_OK &&
+            (op_now & (BQ_OP_FUSE | BQ_OP_SS)) != 0ul)
         {
-            gauge_reset_done = true;
-            bq_print_line("  Device reset (clearing latched FUSE/protections)...");
+            bq_print_line("  ** Latched FUSE or safety fault found. Clearing it needs a");
+            bq_print_line("     gauge reset, and this board is powered through the pack");
+            bq_print_line("     FETs - so the unit WILL power down now. Restart it and");
+            bq_print_line("     run this again to finish provisioning. **");
             bq_mac_command(BQ_MAC_DEVICE_RESET);
-            bq_delay_ms(2000);      /* gauge re-init */
+            bq_delay_ms(2000);      /* gauge re-init, if we are still alive */
         }
     }
 
@@ -1219,9 +1245,312 @@ void BQ40Z50_ReportStatus(void)
         bq_print("   OperationStatus=");
         bq_print_hex(op, 8);
         bq_print_line("");
+
+        /* Full decode. FUSE and XCHG are the ones that explain a dead pack
+         * with a CLEAR SafetyStatus, which is otherwise a baffling reading. */
+        {
+            static const struct { uint32_t mask; const char *name; } opf[] =
+            {
+                { BQ_OP_PRES,    "PRES"    }, { BQ_OP_FUSE,   "FUSE"   },
+                { BQ_OP_XCHG,    "XCHG"    }, { BQ_OP_XDSG,   "XDSG"   },
+                { BQ_OP_PF,      "PF"      }, { BQ_OP_SS,     "SS"     },
+                { BQ_OP_SDV,     "SDV"     }, { BQ_OP_SDM,    "SDM"    },
+                { BQ_OP_EMSHUT,  "EMSHUT"  }, { BQ_OP_CB,     "CB"     },
+                { BQ_OP_SLEEP,   "SLEEP"   }, { BQ_OP_SLEEPM, "SLEEPM" },
+                { BQ_OP_INIT,    "INIT"    }, { BQ_OP_AUTH,   "AUTH"   },
+                { BQ_OP_BTP_INT, "BTP_INT" }, { BQ_OP_XL,     "XL"     },
+                { BQ_OP_LED,     "LED"     }, { BQ_OP_CAL,    "CAL"    },
+            };
+            uint8_t k;
+            bool sep = false;
+
+            bq_print("              [");
+            for (k = 0; k < (uint8_t)(sizeof(opf) / sizeof(opf[0])); k++)
+            {
+                if (op & opf[k].mask)
+                {
+                    if (sep)
+                        bq_print(", ");
+                    bq_print(opf[k].name);
+                    sep = true;
+                }
+            }
+            if (sep)
+                bq_print(", ");
+            bq_print("sec=");
+            bq_print(bq_mode_name(BQ40Z50_SecurityMode()));
+            bq_print("]");
+
+            if (op & BQ_OP_FUSE)
+                bq_print("  ** FUSE LATCHED - all FETs held off **");
+            if (op & BQ_OP_XCHG)
+                bq_print("  ** CHARGING DISABLED **");
+            if (op & BQ_OP_PF)
+                bq_print("  ** PERMANENT FAIL **");
+            bq_print_line("");
+        }
     }
     else
         bq_print_fail();
+
+    /* What the gauge is ASKING the charger for. If these are zero the pack is
+     * refusing charge outright, and no amount of charger fault-finding will
+     * help - the answer is in ChargingStatus below. */
+    {
+        uint16_t cv = 0, cc = 0;
+
+        bq_print("  Chg req   : ");
+        if (bq_read_word(BQ_CMD_CHARGING_VOLTAGE, &cv) &&
+            bq_read_word(BQ_CMD_CHARGING_CURRENT, &cc))
+        {
+            bq_print_u16(cv);
+            bq_print(" mV  ");
+            bq_print_u16(cc);
+            bq_print(" mA");
+            if (cv == 0u || cc == 0u)
+                bq_print("   ** GAUGE IS NOT REQUESTING CHARGE **");
+            bq_print_line("");
+        }
+        else
+            bq_print_fail();
+    }
+
+    /* Current(), signed - negative is discharge. Doubles as the standing-load
+     * measurement when the board is parked. */
+    bq_print("  Current   : ");
+    if (bq_read_word(BQ_CMD_CURRENT, &v))
+    {
+        int16_t ma = (int16_t)v;
+
+        if (ma < 0)
+        {
+            bq_print("-");
+            ma = (int16_t)(-ma);
+        }
+        bq_print_u16((uint16_t)ma);
+        bq_print_line(" mA   (negative = discharge)");
+    }
+    else
+        bq_print_fail();
+
+    bq_print("  SoC / FCC : ");
+    if (bq_read_word(BQ_CMD_RSOC, &v))
+    {
+        bq_print_u16(v);
+        bq_print(" %  ");
+        if (bq_read_word(BQ_CMD_FULL_CHG_CAPACITY, &v))
+        {
+            bq_print_u16(v);
+            bq_print_line(" mAh full-charge capacity");
+        }
+        else
+            bq_print_fail();
+    }
+    else
+        bq_print_fail();
+
+    bq_print("  BattStatus: ");
+    if (bq_read_word(BQ_CMD_BATTERY_STATUS, &v))
+    {
+        bq_print_hex((uint32_t)v, 4);
+        bq_print_line("");
+    }
+    else
+        bq_print_fail();
+
+    /* Charge algorithm configuration, read live rather than assumed.
+     *
+     * Nothing in bq_golden[] writes any of this, so a pack that has only been
+     * through BringUp is on factory defaults - and the defaults are not
+     * obviously right for this product. Two worth looking at every time:
+     *
+     *   T3, the STH/HT boundary, defaults to 30 C. Cross it and the charging
+     *   voltage target drops to the High Temp value.
+     *
+     *   High Temp charging voltage defaults to 4000 mV, which is BELOW a
+     *   charged cell. A full pack that warms past T3 therefore stops charging
+     *   with every status register reading clear.
+     *
+     * kind: 0 = mV word, 1 = absolute temp (0.1 K), 2 = temp delta, 3 = mV byte */
+    {
+        static const struct { uint16_t addr; const char *name; uint8_t kind; } cfg[] =
+        {
+            { BQ_DF_T1_TEMP,            "T1  UT/LT   ", 1 },
+            { BQ_DF_T2_TEMP,            "T2  LT/STL  ", 1 },
+            { BQ_DF_T5_TEMP,            "T5  STL/RT  ", 1 },
+            { BQ_DF_T6_TEMP,            "T6  RT/STH  ", 1 },
+            { BQ_DF_T3_TEMP,            "T3  STH/HT  ", 1 },
+            { BQ_DF_T4_TEMP,            "T4  HT/OT   ", 1 },
+            { BQ_DF_TEMP_HYSTERESIS,    "T hysteresis", 2 },
+            { BQ_DF_CHGV_LOW_TEMP,      "ChgV LowTmp ", 0 },
+            { BQ_DF_CHGV_STD_LOW,       "ChgV StdLow ", 0 },
+            { BQ_DF_CHGV_STD_HIGH,      "ChgV StdHigh", 0 },
+            { BQ_DF_CHGV_HIGH_TEMP,     "ChgV HighTmp", 0 },
+            { BQ_DF_CHGV_REC_TEMP,      "ChgV RecTmp ", 0 },
+            { BQ_DF_PRECHARGE_START_MV, "V precharge ", 0 },
+            { BQ_DF_CHG_VOLTAGE_LOW,    "V low  (LV) ", 0 },
+            { BQ_DF_CHG_VOLTAGE_MED,    "V med  (MV) ", 0 },
+            { BQ_DF_CHG_VOLTAGE_HIGH,   "V high (HV) ", 0 },
+            { BQ_DF_CHG_VOLTAGE_HYST,   "V hysteresis", 3 },
+        };
+        uint8_t k;
+
+        bq_print_line("  --- charge algorithm (data flash) ---");
+        for (k = 0; k < (uint8_t)(sizeof(cfg) / sizeof(cfg[0])); k++)
+        {
+            uint16_t raw = 0;
+            bool ok;
+
+            bq_print("    ");
+            bq_print(cfg[k].name);
+            bq_print(": ");
+
+            if (cfg[k].kind == 3u)
+            {
+                uint8_t b = 0;
+                ok = (bq_df_read_byte(cfg[k].addr, &b) == BQ_OK);
+                raw = b;
+            }
+            else
+                ok = (bq_df_read_word(cfg[k].addr, &raw) == BQ_OK);
+
+            if (!ok)
+            {
+                bq_print_fail();
+                continue;
+            }
+
+            if (cfg[k].kind == 1u || cfg[k].kind == 2u)
+            {
+                /* 0.1 K -> 0.1 C. Absolute values carry the 2732 offset;
+                 * the hysteresis is a delta and does not. */
+                int16_t t = (int16_t)((cfg[k].kind == 1u)
+                                        ? (int16_t)((int16_t)raw - 2732)
+                                        : (int16_t)raw);
+                if (t < 0)
+                {
+                    bq_print("-");
+                    t = (int16_t)(-t);
+                }
+                bq_print_u16((uint16_t)(t / 10));
+                bq_print(".");
+                bq_print_u16((uint16_t)(t % 10));
+                bq_print_line(" C");
+            }
+            else
+            {
+                bq_print_u16(raw);
+                bq_print_line(" mV");
+            }
+        }
+    }
+
+    /* Protection and charge-inhibit registers.
+     *
+     * Printed RAW on purpose. The bit maps live in the TRM, and decoding them
+     * from memory would be worse than useless here - a confidently wrong
+     * "charge inhibited because X" sends the investigation the wrong way, and
+     * this is a battery. Zero versus non-zero IS unambiguous, so that much is
+     * called out; look the actual value up before acting on it.
+     *
+     * Reported unconditionally, unlike BQ40Z50_BringUp() which only prints
+     * these when it happens to catch a FET held off. "Show all status" should
+     * mean it. */
+    {
+        uint32_t sts;
+
+        bq_print("  Safety    : ");
+        if (BQ40Z50_ReadMAC32(BQ_MAC_SAFETY_STATUS, &sts) == BQ_OK)
+        {
+            bq_dbg_safety_status = sts;
+            bq_print_hex(sts, 8);
+            bq_print_line(sts ? "  ** PROTECTION ACTIVE **" : "  (clear)");
+        }
+        else
+            bq_print_fail();
+
+        bq_print("  PF Status : ");
+        if (BQ40Z50_ReadMAC32(BQ_MAC_PF_STATUS, &sts) == BQ_OK)
+        {
+            bq_dbg_pf_status = sts;
+            bq_print_hex(sts, 8);
+            bq_print_line(sts ? "  ** PERMANENT FAIL **" : "  (clear)");
+        }
+        else
+            bq_print_fail();
+
+        /* Read at whatever width the part answers with, NOT via ReadMAC32.
+         * ChargingStatus is narrower than the 4-byte status registers above,
+         * and ReadMAC32 rejects anything shorter than 4 bytes outright - the
+         * block read succeeds and is then thrown away, which reports as an
+         * I2C failure that never happened.
+         *
+         * The returned byte count is printed too, because it is the thing
+         * that settles the width question against the TRM.
+         *
+         * Non-zero is NORMAL here - this register always reports a state, so
+         * there is nothing useful to flag. The value is the whole point. */
+        bq_print("  Charging  : ");
+        {
+            static const struct { uint32_t mask; const char *name; } flags[] =
+            {
+                { BQ_CHG_PV,   "PV"   }, { BQ_CHG_LV,   "LV"   },
+                { BQ_CHG_MV,   "MV"   }, { BQ_CHG_HV,   "HV"   },
+                { BQ_CHG_UT,   "UT"   }, { BQ_CHG_LT,   "LT"   },
+                { BQ_CHG_STL,  "STL"  }, { BQ_CHG_RT,   "RT"   },
+                { BQ_CHG_STH,  "STH"  }, { BQ_CHG_HT,   "HT"   },
+                { BQ_CHG_OT,   "OT"   },
+                { BQ_CHG_IN,   "IN"   }, { BQ_CHG_SU,   "SU"   },
+                { BQ_CHG_VCT,  "VCT"  }, { BQ_CHG_MCHG, "MCHG" },
+                { BQ_CHG_NCT,  "NCT"  }, { BQ_CHG_CCC,  "CCC"  },
+                { BQ_CHG_CVR,  "CVR"  }, { BQ_CHG_CCR,  "CCR"  },
+            };
+            uint8_t buf[8];
+            uint8_t n = 0;
+
+            if (bq_mac_block_read(BQ_MAC_CHARGING_STATUS, buf, sizeof(buf), &n)
+                    == BQ_OK && n > 0u)
+            {
+                uint8_t i;
+                uint32_t chg = 0;
+                bool first = true;
+
+                for (i = 0; i < n && i < 4u; i++)
+                    chg |= ((uint32_t)buf[i]) << (8u * i);
+
+                bq_print_hex(chg, (uint8_t)((n < 4u ? n : 4u) * 2u));
+
+                /* Listed in reading order - voltage region, then temperature
+                 * band, then status flags - rather than bit order, because
+                 * that is the order the value gets interpreted in. */
+                bq_print("  [");
+                for (i = 0; i < (uint8_t)(sizeof(flags) / sizeof(flags[0])); i++)
+                {
+                    if (chg & flags[i].mask)
+                    {
+                        if (!first)
+                            bq_print(", ");
+                        bq_print(flags[i].name);
+                        first = false;
+                    }
+                }
+                if (first)
+                    bq_print("none");
+                bq_print("]");
+
+                /* The two that mean "this pack will not charge". Called out
+                 * separately because they are the whole reason this register
+                 * is worth reading - everything else is context for them. */
+                if (chg & BQ_CHG_IN)
+                    bq_print("  ** CHARGE INHIBITED **");
+                if (chg & BQ_CHG_SU)
+                    bq_print("  ** CHARGE SUSPENDED **");
+                bq_print_line("");
+            }
+            else
+                bq_print_fail();
+        }
+    }
 
     bq_print("  Temp      : ");
     if (bq_read_word(0x08, &v))          /* SBS Temperature(), 0.1 K */

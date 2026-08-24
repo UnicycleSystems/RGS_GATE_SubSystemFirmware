@@ -3,8 +3,8 @@
 
 
 
-#define FIRMWARE_REV_MSB        1
-#define FIRMWARE_REV_LSB        00
+#define FIRMWARE_REV_MSB        3
+#define FIRMWARE_REV_LSB        2
 
 
 
