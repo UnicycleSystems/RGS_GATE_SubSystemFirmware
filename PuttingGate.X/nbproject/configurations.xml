@@ -35,6 +35,8 @@
       <itemPath>../CommonFiles/header/persist_store.h</itemPath>
       <itemPath>../CommonFiles/header/flash.h</itemPath>
       <itemPath>../CommonFiles/header/pitchandroll.h</itemPath>
+      <itemPath>../CommonFiles/header/i2c2_helpers.h</itemPath>
+      <itemPath>../CommonFiles/header/lis2dw12_i2c2.h</itemPath>
       <itemPath>../CommonFiles/header/ArrayUtils.h</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
@@ -99,6 +101,8 @@
       <itemPath>../CommonFiles/source/flash.s</itemPath>
       <itemPath>../CommonFiles/source/pitchandroll.c</itemPath>
       <itemPath>../CommonFiles/source/ArrayUtils.c</itemPath>
+      <itemPath>../CommonFiles/source/i2c2_helpers.c</itemPath>
+      <itemPath>../CommonFiles/source/lis2dw12_i2c2.c</itemPath>
     </logicalFolder>
     <itemPath>firmware_version.h</itemPath>
   </logicalFolder>
@@ -318,15 +322,9 @@
                   value="${communication.interface.default}"/>
         <property key="communication.interface.jtag" value="2wire"/>
         <property key="communication.speed" value="${communication.speed.default}"/>
-        <property key="debugoptions.debug-startup" value="Use system settings"/>
-        <property key="debugoptions.reset-behaviour" value="Use system settings"/>
         <property key="debugoptions.simultaneous.debug" value="false"/>
         <property key="debugoptions.useswbreakpoints" value="false"/>
-        <property key="event.recorder.debugger.behavior" value="Running"/>
-        <property key="event.recorder.enabled" value="false"/>
-        <property key="event.recorder.scvd.files" value=""/>
         <property key="hwtoolclock.frcindebug" value="false"/>
-        <property key="lastid" value=""/>
         <property key="memories.aux" value="false"/>
         <property key="memories.bootflash" value="true"/>
         <property key="memories.configurationmemory" value="true"/>
@@ -341,8 +339,6 @@
         <property key="memories.programmemory" value="true"/>
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="poweroptions.powerenable" value="false"/>
-        <property key="programmerToGoFilePath"
-                  value="C:/Users/Peter/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_PuttingGate.X/debug/default/RGS_PuttingGate_ptg"/>
         <property key="programoptions.donoteraseauxmem" value="false"/>
         <property key="programoptions.eraseb4program" value="true"/>
         <property key="programoptions.ledbrightness" value="5"/>
@@ -566,7 +562,7 @@
         <targetDevice>PIC24FJ64GA004</targetDevice>
         <targetHeader></targetHeader>
         <targetPluginBoard></targetPluginBoard>
-        <platformTool>ICD4Tool</platformTool>
+        <platformTool>pk4hybrid</platformTool>
         <languageToolchain>XC16</languageToolchain>
         <languageToolchainVersion>2.10</languageToolchainVersion>
         <platform>3</platform>
@@ -734,7 +730,7 @@
       <ICD4Tool>
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="programmerToGoFilePath"
-                  value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_PuttingGate.X/debug/standalone/RGS_PuttingGate_ptg"/>
+                  value="C:/RGS_GATE_SubSystemFirmware/PuttingGate.X/debug/standalone/PuttingGate_ptg"/>
       </ICD4Tool>
       <Tool>
         <property key="ADC 1" value="true"/>
@@ -967,8 +963,6 @@
         <property key="memories.programmemory" value="true"/>
         <property key="memories.programmemory.ranges" value="0-abfb"/>
         <property key="poweroptions.powerenable" value="true"/>
-        <property key="programmerToGoFilePath"
-                  value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_PuttingGate.X/debug/standalone/RGS_PuttingGate_ptg"/>
         <property key="programmerToGoImageName" value="RGS_PuttingGate_ptg"/>
         <property key="programoptions.donoteraseauxmem" value="false"/>
         <property key="programoptions.eraseb4program" value="true"/>

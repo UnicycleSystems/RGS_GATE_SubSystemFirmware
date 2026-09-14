@@ -14,6 +14,8 @@
 #include "../CommonFiles/header/tmr2.h"
 #include "../CommonFiles/header/pin_manager.h"
 #include "../CommonFiles/header/lis2dw12.h"
+#include "../CommonFiles/header/i2c2_helpers.h"
+#include "../CommonFiles/header/lis2dw12_i2c2.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -29,6 +31,11 @@
 #include "firmware_version.h"
 #include "../CommonFiles/header/EEpromBlockLabels.h"
 #include "../CommonFiles/header/ArrayUtils.h"
+/* For BQ40Z50_I2C_ADDRESS and BQ_CMD_VOLTAGE only - bq40z50.c is NOT in this
+ * project's build. That driver is heavily instrumented with UART reporting,
+ * which the field application neither initialises nor has the flash to spare
+ * for. The one word we need is a plain SBS read we can do directly. */
+#include "../CommonFiles/header/bq40z50.h"
 
 
 //accelerometer specific stuff....
@@ -37,115 +44,56 @@
 //commented out here, copied to top, but preserved for moving to header file
 /* ---- LIS2DW12 / LIS2DW1TR basics ---- */
 
-#define REG_WHO_AM_I        0x0F    /* expect 0x44 */
-#define REG_CTRL1           0x20
-#define REG_CTRL2           0x21
-#define REG_CTRL6           0x25
-#define REG_OUT_X_L         0x28    /* then X_H, Y_L, Y_H, Z_L, Z_H */
 
-#define CTRL2_BDU           (1u << 3)
-#define CTRL2_IF_ADD_INC    (1u << 2)
 
-#define LIS_ADDR_0 0x18
-#define LIS_ADDR_1 0x19
 #define ButtonDelay 5    // The number of cycles of the button hold to return 'true)
                          // NOT debounce, this is the long (ish)user press and hold
 
 #define On 1
 #define Off 0
 
+////////////////////////////////////////////////////
+// Round robin to move to seperate c and h files?
 //round robin possible tasks
-void GetBattVolts(void);
-void GetAccel(void);
-void DummyTask(void);
+uint8_t GetBattVolts(void);
+uint8_t GetAccel(void);
 
-///Test functions switches
+typedef uint8_t (*TaskFn)(void);
+TaskFn Task[]={GetAccel,GetBattVolts};
 
-
-
-
-// round robin tasks
-//only one of these should be active
-//#define Standard
-
-//only one of these should be active
-//#define Test1
-//#define Test2
-#define TestNewBattBoard
-
-
-
-// Task handler functions as needed, increment NUM_Tasks 
-#ifdef Test1
-#define NUM_Tasks 2
-void Test1PatternA(void);
-void Test1PatternB(void);
-void (*Task[NUM_Tasks])(void)={Test1PatternA,Test1PatternB};
-#endif
-
-#ifdef Test2
-#define NUM_Tasks 2
-void Test2PatternA(void);
-void Test2PatternB(void);
-void (*Task[NUM_Tasks])(void)={Test2PatternA,Test2PatternB};
-
-#endif
-
-
-#ifdef Standard
-#define NUM_Tasks 2
-void (*Task[NUM_Tasks])(void)={GetAccel,GetBattVolts};
-
-#endif
-
-#ifdef TestNewBattBoard
-#define NUM_Tasks 2
-void (*Task[NUM_Tasks])(void)={GetAccel,DummyTask};
-#endif
-
-// these are the 'ticker' tasks, worked through once per second,
-// rather than every pass of the loop.
-// executed in a 'round robin' , one task executed per second (approx)
-// time is based on TMR2 interrupt, sets 'DoTask ' flag.
-// so to add another task, just add a task handler, 
-// reference it in the array, below, and increment NUM_Tasks.
-//...oh.. and actually write the code that does the task!
-//void (*Task[NUM_Tasks])(void)={GetBattVolts,GetAccel};
+#define NUM_Tasks (sizeof(Task)/sizeof(Task[0]))
 
 uint8_t TaskIndex;
+uint8_t TaskWarning;
+void HandleTaskWarning(uint16_t code);  // handler for any errors/warnings on routine tasks
 
 ////////////////////////////////////////////////
+void AllLightsOn (void);
+void AllLightsOff (void);
+void AllPowerDown (void);
+uint8_t CopyLightState; // to allow the lasers etc to be put back as we found them
+void WarnCodeToJetson(uint16_t WarnCode);
+void ClearWarnCodeToJetson(uint16_t WarnCode);
 
 
-
-
-static uint8_t s_addr = LIS_ADDR_0;
-void LIS2DW12_SetAddress_I2C2(uint8_t addr) { s_addr = addr; }
-static bool i2c2_wait_done(volatile I2C2_MESSAGE_STATUS *st, uint16_t timeout_ms);
-static bool i2c2_write_u8(uint8_t dev7, uint8_t reg, uint8_t val);
-static bool i2c2_read_regs(uint8_t dev7, uint8_t start_reg, uint8_t *dst, uint8_t n);
-//end accelerometer specific defines
 
 // accelerometer prototypes
 //void LIS2DW12_SetAddress_I2C2(uint8_t addr);
-void QuickAcellerometerGrabber(void);
-bool LIS2DW12_Init_I2C2(void);                 // returns true on success
-bool LIS2DW12_ReadXYZ_I2C2(int16_t *x, int16_t *y, int16_t *z);
-static bool lis_probe_addr(uint8_t addr);
+uint8_t QuickAcellerometerGrabber(void);
 
 //end accelerometer prototypes
 
 void CallJetsonBall(void);
 void CallJetsonJob(void);
 
-void ReadOneByteExample(void);
-bool lis2dw12_read_register(uint8_t reg, uint8_t *value);
 //bool LIS2DW12_Configure(void);
-void ShutdownProcessTemp(void);
-void PowerDown(void);
+void PowerDown(bool ForcePowerDown);
 
-void POST_Routine(void);
-void LaunchTest(void);
+//Just for use with the above
+#define ForcePwrDwn 1
+#define ButtonPwrDwn 0
+
+
 uint8_t PowerButton (bool OnOff);
 
 // PWM on RB11 via OC3/T3
@@ -155,23 +103,36 @@ void PWM_RB11_Enable(void);
 void PWM_RB11_Disable(void);
 void PWM_RB11_SetDuty(uint8_t duty);
 
- uint8_t testval;
- 
 // power management
-uint32_t SwitchState;
-uint32_t ButtonCount;
-bool PowerOff;
+// queuepanic is set when JobQueue_Push fails and is currently never read -
+// a queue overflow is recorded and then ignored. Left in place because the
+// fix is to ACT on it, not to delete it.
 bool queuepanic;
 
 
 I2C_WriteJob_t LoadJobFromEEprom;
-uint8_t JobIndex;
  bool charged;
  
  
  int16_t xcal;
  int16_t ycal;
  int16_t zcal;
+ 
+ //battery management levels and control variables
+ static const uint16_t VoltageThresholds[]={14300,14100,14000,13800,13400,13300}; // voltages in millvolts
+#define NumVoltLevels 5  // includes 0, so six items
+#define CriticalVoltage VoltageThresholds[NumVoltLevels]
+static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
+ 
+ static const uint8_t ChargeThresholds[]={25,20,15,10,5};  // charge as percent
+#define NumChrgLevels 4 // includes 0
+#define CrticalCharge ChargeThresholds[NumChrgLevels]
+static uint8_t ChargeThresholdNow; // thus indicates which to test against
+
+ static uint8_t VoltageCriticalCount;
+ static uint8_t ChargeCriticalCount;
+ 
+ 
 
 int main(void)
 {
@@ -216,9 +177,6 @@ int main(void)
     RearSense=0;
     TransitTime=0;
     GateTimeout=0;
-    SwitchState=0; 
-    ButtonCount=0;
-    PowerOff=false;
     TaskIndex=0;
      
     //This is a 
@@ -254,9 +212,7 @@ int main(void)
     else
     {
           JETSON_5V_ON_SetLow();
-
-        
-         
+  
     }
     
     
@@ -349,8 +305,18 @@ int main(void)
     IFS1bits.T5IF = false;
     IEC1bits.T5IE = false;
     IFS1bits.CNIF = 0;
-
+    INTERRUPT_TO_JETSON_SetDigitalOutput();
+ INTERRUPT_TO_JETSON_SetLow();
     
+ //initialise the voltage and charge thresholds for battery manangement
+ VoltageThresholdNow=0;
+ ChargeThresholdNow=0;
+ VoltageCriticalCount=0;
+ ChargeCriticalCount=0;
+ 
+ 
+ 
+ 
     ClrWdt();
 
     IFS1bits.T5IF = false;
@@ -421,24 +387,24 @@ int main(void)
     {   
       
        if(!POWER_BUTTON_GetValue())
-         PowerDown();
+         PowerDown(ButtonPwrDwn);
 
-          if(DoTask) //this is set periodically by the TMR2 interrupt. Nominally 1 second.
-             {
-              if(SelfResetTimeout)
-              {
-                if(!SelfResetTimeout--)
-                    CancelReset();
-              }
-                
-             
-              DoTask=0; // clear it straight away, it will re set in due course! 
-                Task[TaskIndex](); 
+        if(DoTask) //this is set periodically by the TMR2 interrupt. Nominally 1 second.
+            {
+                DoTask=0; // this will re-set itself in 1 second
+                if(SelfResetTimeout)// if the first part of reset been issued, it needs to be completed within 10 seconds or is cancelled.
+                {
+                    if(!SelfResetTimeout--)
+                        CancelReset();
+                }
+                             
+                TaskWarning=Task[TaskIndex](); 
                 TaskIndex++;
                 if(TaskIndex>=NUM_Tasks)
-                    TaskIndex=0;  
-
+                    TaskIndex=0;
              }
+       if(TaskWarning)
+           HandleTaskWarning(TaskWarning);
  //----------------------------------
 // -- check to see if an i2c 'write' - ie job load is pending             
         if(EventJob.i2cQueJobWaiting)
@@ -446,7 +412,7 @@ int main(void)
             if(I2C_WriteQueue_Pop(&LoadJobFromEEprom)) 
             {
                 if(!JobQueue_Push(LoadJobFromEEprom.start_address))
-                   queuepanic=1;
+                   queuepanic=1;// TODO: add handle to this to tell jetson last job bombed
                 
             }
             
@@ -596,44 +562,6 @@ void CallJetsonJob(void)
 
 
 
-void ShutdownProcessTemp()
-
-{
-    uint8_t delay;
-     BI_LED_RED_SetLow();   
-    for(delay=0;delay<200;delay++)
-    {
-         ClrWdt();
-        __delay_ms(50);
-        RED_LED_ON_Toggle();  
-    }
-        RED_LED_ON_SetLow();         
-
-   JETSON_5V_ON_SetHigh();//temp flip
-        
-    ButtonCount=0;
-    while(ButtonCount<10)
-    {
-       
-        if(!POWER_BUTTON_GetValue())
-            ButtonCount++;
-        else
-            ButtonCount=0;
-        __delay_ms(50);
-        ClrWdt();
-       
-    }
-    while(!POWER_BUTTON_GetValue())
-    {
-        ClrWdt();
-        __delay_ms(50);
-         BI_LED_GREEN_Toggle();   
-    }
-       BI_LED_GREEN_SetLow();       
-   
-     JETSON_5V_ON_SetLow();//tempflip
-    
-}
 
 
 
@@ -653,118 +581,12 @@ static void small_delay(void)
 
 /* ---- Low-level helpers using ONLY your TRB API ---- */
 
-static bool i2c2_wait_done(volatile I2C2_MESSAGE_STATUS *st, uint16_t timeout_ms)
-{
-    while (*st == I2C2_MESSAGE_PENDING) {
-        __delay_ms(1);
-        ClrWdt();
-        if (timeout_ms-- == 0) return false;   // timeout
-    }
-    return true;
-}
-
-
-static bool i2c2_write_u8(uint8_t dev7, uint8_t reg, uint8_t val)
-{
-    volatile I2C2_MESSAGE_STATUS st = I2C2_MESSAGE_PENDING;
-    uint8_t w[2] = { reg, val };
-    I2C2_MasterWrite(w, 2, dev7, (I2C2_MESSAGE_STATUS*)&st);
-    return i2c2_wait_done(&st, 50) && (st == I2C2_MESSAGE_COMPLETE);
-}
-
 /* Proper repeated-start via TRB pair: write(reg) then read(n) */
 /* Preferred: repeated-start via TRB pair. Falls back to STOP (write then read). */
-static bool i2c2_read_regs(uint8_t dev7, uint8_t start_reg, uint8_t *dst, uint8_t n)
-{
-    volatile I2C2_MESSAGE_STATUS st = I2C2_MESSAGE_PENDING;
-    I2C2_TRANSACTION_REQUEST_BLOCK trb[2];
-
-    I2C2_MasterWriteTRBBuild(&trb[0], &start_reg, 1, dev7);
-    I2C2_MasterReadTRBBuild (&trb[1], dst,        n, dev7);
-    I2C2_MasterTRBInsert(2, trb, (I2C2_MESSAGE_STATUS*)&st);
-
-    if (i2c2_wait_done(&st, 50) && st == I2C2_MESSAGE_COMPLETE)
-        return true;
-
-    // Fallback: STOP between write(reg) and read(n)
-    st = I2C2_MESSAGE_PENDING;
-    I2C2_MasterWrite(&start_reg, 1, dev7, (I2C2_MESSAGE_STATUS*)&st);
-    if (!i2c2_wait_done(&st, 50) || st != I2C2_MESSAGE_COMPLETE) return false;
-
-    st = I2C2_MESSAGE_PENDING;
-    I2C2_MasterRead(dst, n, dev7, (I2C2_MESSAGE_STATUS*)&st);
-    return i2c2_wait_done(&st, 50) && (st == I2C2_MESSAGE_COMPLETE);
-}
-
-static bool i2c2_read_u8(uint8_t dev7, uint8_t reg, uint8_t *val)
-{
-    return i2c2_read_regs(dev7, reg, val, 1);
-}
-
 /* ---- High-level sensor ops ---- */
 
-static bool lis_probe(void)
+uint8_t QuickAcellerometerGrabber(void)
 {
-    uint8_t id = 0;
-    if (!i2c2_read_u8(s_addr, REG_WHO_AM_I, &id)) return false;
-    return (id == 0x44);
-}
-
-bool LIS2DW12_Init_I2C2(void)
-{
-    EMULATE_EEPROM_Memory[30] = 0xA1;     // entered init
-
-    s_addr=LIS_ADDR_0;    // 0x18, SA0 grounded - matches lis2dw12.h
-
-    EMULATE_EEPROM_Memory[31] = s_addr;
-    
-    
-// Explicitly enter power-down
-    if (!i2c2_write_u8(s_addr, REG_CTRL1, 0x00))
-    {
-        EMULATE_EEPROM_Memory[33] = 0xC0;
-        return false;
-    }
-    
-    if (!i2c2_write_u8(s_addr, REG_CTRL2, 0x0C))
-        { EMULATE_EEPROM_Memory[32] = 0xC2; return false; }
-
-   
-    
-    if (!i2c2_write_u8(s_addr, REG_CTRL6, 0xC4))   // ~100 Hz, FS �2g
-        { EMULATE_EEPROM_Memory[33] = 0xC1; return false; }
-    
-     if (!i2c2_write_u8(s_addr, REG_CTRL1, 0x24))   // ~100 Hz, FS �2g
-        { EMULATE_EEPROM_Memory[33] = 0xC1; return false; }
-
-    EMULATE_EEPROM_Memory[34] = 0x00;     // success
-    return true;
-}
-
-bool LIS2DW12_ReadXYZ_I2C2(int16_t *x, int16_t *y, int16_t *z)
-{
-    uint8_t raw[6];
-    if (!i2c2_read_regs(s_addr, REG_OUT_X_L, raw, 6)) return false;
-
-    *x = (int16_t)((uint16_t)raw[1] << 8 | raw[0]);
-    *y = (int16_t)((uint16_t)raw[3] << 8 | raw[2]);
-    *z = (int16_t)((uint16_t)raw[5] << 8 | raw[4]);
-    *x>>=2;
-    *y>>=2;
-    *z>>=2;
-          
-    return true;
-}
-
-static bool lis_probe_addr(uint8_t addr)
-{
-    uint8_t id = 0;
-    return i2c2_read_regs(addr, REG_WHO_AM_I, &id, 1) && (id == 0x44);
-}
-
-void QuickAcellerometerGrabber(void)
-{
-    uint8_t AddressStart;
     int16_t pitch;
     int16_t roll;
     
@@ -793,12 +615,26 @@ void QuickAcellerometerGrabber(void)
          * without this PuttingGate would read roll near +/-180 when level. */
         if (LIS2DW12_ReadXYZ_I2C2(&y, &x, &z))
         {
-            
-        //apply the corrections
-            
-            x=x-xcal;
-            y=y-ycal;
-            z=z-zcal;      
+
+            /* Mounting-tilt cancellation, horizontal components only.
+             *
+             * ADDED, not subtracted. RGS_BringUp computes the stored value as
+             * xcal = xcal - x while sitting level, so it already carries the
+             * sign needed to cancel the offset. Subtracting it here applied
+             * the correction BACKWARDS - doubling the mounting error instead
+             * of removing it, so a calibrated unit read worse than an
+             * uncalibrated one. Must stay in step with RGS_BringUp's copy.
+             *
+             * Z is deliberately NOT corrected. It carries the 1g reference
+             * that pitch and roll are measured against, so offsetting it makes
+             * atan2(y, z) ill-conditioned - roll flips to +/-180 on noise once
+             * z nears zero - and the accumulated offset runs into the int16
+             * limit. Nulling X and Y is enough to make a level board read zero
+             * on both angles. zcal is stored only so it can be read back and
+             * inspected; it is not applied. */
+            x=x+xcal;
+            y=y+ycal;
+
         z = (int16_t)(-z);
         uint16_t ux = (uint16_t)x;
         uint16_t uy = (uint16_t)y;
@@ -836,49 +672,53 @@ void QuickAcellerometerGrabber(void)
        EMULATE_EEPROM_Memory[PitchMSB_Addr] = (uint8_t)(upitch);
        EMULATE_EEPROM_Memory[RollLSB_Addr] = (uint8_t)(uroll >> 8);
        EMULATE_EEPROM_Memory[RollMSB_Addr] = (uint8_t)(uroll);
+       
+       if ((abs(pitch)>455)||(abs(roll)>455))
+           return(1);  // indicates unacceptable orientation
+       else
+           return(0); // all good
+       
+       
+         
+         //TODO: Note-- this is a blocker, just testing 
+#ifdef waitack
+       while((EMULATE_EEPROM_Memory[JetsonAcknowledgeCall_Addr]!=GateInvalidOrientation))
+         {
+             BI_LED_RED_SetHigh();
+             BI_LED_GREEN_SetLow();
+             
+             ClrWdt();
+             __delay_ms(100);
+         }
+         EMULATE_EEPROM_Memory[JetsonCallingCode_Addr]= 0;
+         EMULATE_EEPROM_Memory[JetsonAcknowledgeCall_Addr]= 0;
+#endif 
+       
+ 
+       
+       
 }
 
 //refactor into a general purpose button thing...
-void PowerDown(void)
+void PowerDown(bool ForcePowerDown)
 { 
-    uint8_t HoldOffms;
-    HoldOffms = 0;
-    if (PowerButton(Off))
-    {
-        JETSON_5V_ON_SetLow();
-        HOLD_PWR_SetLow();
-
-        // Give the external power-latch hardware time to actually cut supply
-        // before we reset. Without this delay, if the latch hasn't dropped
-        // power yet, the MCU reboots while still powered (going through the
-        // bootloader) with the button often still held, which re-latches
-        // power straight back on instead of turning off.
-        
-        while(1)
+  
+    
+    if (!ForcePowerDown)  // we could be here from a direct call or button push.... 
+        if (!PowerButton(Off)) 
         {
-            
-            ClrWdt();
-            __delay_ms(50);
-           
-            HoldOffms++;
-            if(HoldOffms >=30)
-            {
-                
-              RCONbits.EXTR = 1;
-              RCONbits.POR=1;
-              RCONbits.BOR=1;
-              asm("reset");  
-            }
+            return;
         }
-
-    }
-
+     
+        //AllPowerDown(); -- use the handler rather than direct call
+        HandleTaskWarning(PowerOff_1_min);
+        
+    
     /* Only reached when the hold was too short - a qualifying hold never
      * returns from the loop above. PowerButton() borrowed the LEDs while
-     * counting and left them out, so restore the normal running display
-     * (green) rather than leaving the unit dark but running. */
+     * counting and left them out, so set to AMBER for rogue state */
     BI_LED_GREEN_SetHigh();
-    BI_LED_RED_SetLow();
+    BI_LED_RED_SetHigh();
     return;
 
 }
@@ -1013,76 +853,275 @@ void PWM_RB11_SetDuty(uint8_t duty)
 /// normal tasks list, 'Standard'
 /// alternative, test builds are 'Test1' and 'Test2'
 
- void GetBattVolts(void)
- {
-   
-    uint8_t dst[2];
-     BI_LED_GREEN_SetLow();//Turn off Green LED
-     BI_LED_RED_SetHigh();//Turn on Red LED
-     ClrWdt();
-     i2c2_read_regs(0x36, 0x09, dst, 2);
-      ClrWdt(); 
-      
-     EMULATE_EEPROM_Memory[8]=dst[1];
-     EMULATE_EEPROM_Memory[9]=dst[0];
-     BI_LED_GREEN_SetHigh();//Turn off Green LED
-     BI_LED_RED_SetLow();//Turn on Red LED
- }
-
-void GetAccel(void)
+/* Read total pack voltage from the BQ40Z50 and publish it for the Jetson.
+ *
+ * SBS Voltage() (0x09) returns total pack millivolts as a 16-bit word, LSB
+ * first. The memory map stores 16-bit values LSB-at-the-lower-address too -
+ * the same convention MAP_PackInt16() implements - so the two bytes go
+ * straight across without reordering.
+ *
+ * Read directly rather than through bq40z50.c: that driver is not in this
+ * project's build, and Voltage() needs no unseal and no ManufacturerAccess,
+ * so a plain register read is the whole job.
+ *
+ * NOTE: the previous version of this function read a different device (0x36)
+ * and wrote the result to EMULATE_EEPROM_Memory[8] and [9] - which are
+ * Accl_Z_LSB_Addr and Accl_Z_MSB_Addr. It was overwriting the accelerometer's
+ * Z reading with battery data. The destination is now BatteryPackVoltage_Addr,
+ * which is what the map reserves for it.
+ */
+uint8_t GetBattVolts(void) //TODO: extend to check charge ,and determine if critical or not
 {
+    
+   /*static const uint16_t VoltageThresholds[]="14300,14100,14000,13800,13400,13300"; // voltages in millvolts
+#define NumVoltLevels 5  // includes 0, so six items
+#define CriticalVoltage VoltageThresholds[NumVoltLevels]
+static uint8_t VoltageThresholdNow;  // thus indicates which one to test against  */
+    uint8_t raw[2];
+    uint16_t voltagemv;
+    uint16_t warning;
+    warning=0;
     BI_LED_GREEN_SetLow();//Turn off Green LED
     BI_LED_RED_SetHigh();//Turn on Red LED
-    QuickAcellerometerGrabber();
+    ClrWdt();
+
+    if (i2c2_read_regs(BQ40Z50_I2C_ADDRESS, BQ_CMD_VOLTAGE, raw, 2))// 
+    {
+        EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr]     = raw[0];  /* LSB */
+        EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr + 1] = raw[1];  /* MSB */
+    }
+    /* A failed read leaves the previous value in place. Stale is less
+     * misleading here than a sudden zero, which would read as a flat pack. */
+    voltagemv= MAP_UnpackInt16(raw);
+    if (voltagemv<(VoltageThresholds[VoltageThresholdNow]))  //12v is a nominal, test figure, 3V per cell
+    {
+        
+        if(VoltageThresholdNow>=5)
+        {
+           warning|=LowBatteryCritical; 
+            
+            if(VoltageCriticalCount>=3)
+                warning|=PowerOff_1_min;
+                
+            
+            VoltageCriticalCount++;
+        }
+        else
+        {
+            warning|=LowBatteryWarning;//May get modified to  critical 
+            VoltageThresholdNow++;
+        }
+           
+    }
+    
+    //Quick sanity check if voltage gone up again recently - ie has previously passed at least two thresholds, but is now above the higher threshold, then call it all off
+    if ( (voltagemv>=(VoltageThresholds[0])) && (VoltageThresholdNow>=2) )  
+    {
+        VoltageThresholdNow=0;
+        VoltageCriticalCount=0;
+        warning&=~LowBatteryWarning;
+        warning&=~LowBatteryCritical;
+    }
+            
+    ClrWdt();
     BI_LED_GREEN_SetHigh();//Turn off Green LED
     BI_LED_RED_SetLow();//Turn on Red LED
+    return(warning);
+}
+
+uint8_t GetAccel(void)
+{
+    uint8_t warning;
+    warning=0;
+    BI_LED_GREEN_SetLow();//Turn off Green LED
+    BI_LED_RED_SetHigh();//Turn on Red LED
+    if(QuickAcellerometerGrabber())   //returns any non zero for warning
+        warning=GateInvalidOrientation;
+    BI_LED_GREEN_SetHigh();//Turn off Green LED
+    BI_LED_RED_SetLow();//Turn on Red LED
+    return(warning);
 }
 
 
+//HandleTaskWarning is maybe not best/exclusive name, as can be used by other bits of system.
 
-#ifdef Test1
-void Test1PatternA(void)
+void HandleTaskWarning(uint16_t code)
+
 {
-  BI_LED_RED_SetHigh();//Turn on Red LED
-  BI_LED_GREEN_SetLow();//Turn off Green LED
-  FRONT_LASER_PWM_SetHigh();
-  REAR_LASER_PWM_SetHigh();
+    WarnCodeToJetson(code);  // Set warning code and flap interrupt to Jetson
+
+    if (code & PowerOff_1_min)          /* Jetson power removed in 1 minute, shut down */
+    {
+        AllPowerDown();
+        return;  //might as well!
+    }
+/*
+    if (code & LowBatteryWarning)       //
+    {
+        
+    }
+    */
+/*
+    if (code & LowBatteryCritical)      //Warn user, may shut down soon 
+    {
+        AllPowerDown();
+    }*/
+
+    if (code & BallStrike)              /* Impact event, orientation largely unaffected */
+    {
+        
+    }
+
+    if (code & GateMoving)              /* Gate picked up; lasers off until orientation settles */
+    {
+        AllLightsOff();
+    }
+
+    if (code & GateInvalidOrientation)  /* Tilt greater than TBD X degrees */
+    {
+        AllLightsOff();
+    }
 }
-void Test1PatternB(void)
+    
+
+    
+
+
+void AllPowerDown (void)
 {
-  BI_LED_RED_SetLow();//Turn off Red LED
-  BI_LED_GREEN_SetLow();//Turn off Green LED
-  FRONT_LASER_PWM_SetLow();
-  REAR_LASER_PWM_SetLow(); 
-}
+    uint8_t HoldOffms;
+    HoldOffms = 0;
+    uint16_t SecondsCount;
+    uint16_t OffTime;
+    uint16_t OnTime;
+    
+    AllLightsOff();
+   
+     BI_LED_RED_SetHigh();
+     BI_LED_GREEN_SetLow();
+  //Wait 1 minute with fancy flickering RED LED then do the actual power down   
+    for (SecondsCount=0;SecondsCount<60;SecondsCount++)
+    {
+        OffTime=SecondsCount;
+        OffTime=SecondsCount*10;
+        OnTime=1000-OffTime;
+        
+       BI_LED_RED_SetHigh();
+       ClrWdt();
+       __delay_ms(OnTime);
+       BI_LED_RED_SetLow();
+       ClrWdt();
+       __delay_ms(OffTime);  
+    }
+          
+   //This is the actual power down
+        JETSON_5V_ON_SetLow();
+        HOLD_PWR_SetLow();
 
-
-#endif
-
-#ifdef Test2
-void Test2PatternA(void)
-{
-  BI_LED_RED_SetLow();//Turn on Red LED
-  BI_LED_GREEN_SetHigh();//Turn off Green LED
-  FRONT_LASER_PWM_SetHigh();
-  REAR_LASER_PWM_SetLow(); 
-   BEAM_Toggle(); 
+        // Give the external power-latch hardware time to actually cut supply
+        // before we reset. Without this delay, if the latch hasn't dropped
+        // power yet, the MCU reboots while still powered (going through the
+        // bootloader) with the button often still held, which re-latches
+        // power straight back on instead of turning off.
+        
+    //Below: looks a bit overcomplicated now power path behaving ok!  
+        // just a simple infinite loop clearing the watchdog should be fine now?
+        while(1)
+        {
+            
+            ClrWdt();
+            __delay_ms(50);
+           
+            HoldOffms++;
+            if(HoldOffms >=300)//if this happens, the power has not gone down
+            {
+                
+              RCONbits.EXTR = 1;
+              RCONbits.POR=1;
+              RCONbits.BOR=1;
+              asm("reset");  
+            }
+        }
     
 }
-void Test2PatternB(void)
+
+void AllLightsOn (void)
 {
-  BI_LED_RED_SetLow();//Turn on Red LED
-  BI_LED_GREEN_SetLow();//Turn off Green LED
-  FRONT_LASER_PWM_SetLow();
-  REAR_LASER_PWM_SetHigh(); 
-  BEAM_Toggle();  
+    FRONT_LASER_PWM_SetLow();
+    REAR_LASER_PWM_SetLow();
+    BEAM_SetLow();
+    EMULATE_EEPROM_Memory[LaserStateAddr]=7;
+    RestoreDetect();
+}
+
+void AllLightsOff (void)
+{   
     
+    FrontSensorOff;
+    RearSensorOff;
+    if(EMULATE_EEPROM_Memory[LaserStateAddr]!=0)
+       CopyLightState= EMULATE_EEPROM_Memory[LaserStateAddr]; //back up the current lighting state. but don't accidentally make it zero if this has already been called
+    
+    EMULATE_EEPROM_Memory[LaserStateAddr]=0;
+    FRONT_LASER_PWM_SetHigh();
+    REAR_LASER_PWM_SetHigh();
+    BEAM_SetHigh();
 }
-#endif
 
-
-void DummyTask(void)
+void AllLightsRestore(void) //puts the lights back as we found them 
 {
-    return;
+    
+     if (CopyLightState&0x01)
+      FRONT_LASER_PWM_SetLow();
+  else
+      FRONT_LASER_PWM_SetHigh();
+  
+  if (CopyLightState&0x02)
+      REAR_LASER_PWM_SetLow();
+  else
+      REAR_LASER_PWM_SetHigh();
+  
+   if (CopyLightState&0x04)
+      BEAM_SetLow();
+  else
+      BEAM_SetHigh();
+     
+   EMULATE_EEPROM_Memory[LaserStateAddr]=CopyLightState; 
+   RestoreDetect();
 }
- 
+
+void WarnCodeToJetson(uint16_t WarnCode)
+{
+    uint16_t CurrentStatus;
+    
+    
+      // Set the code to inform the something has changed.
+    // jetson then knows where to look by reading EMULATE_EEPROM_Memory[CallJetsonCode_Addr]
+       CurrentStatus= MAP_UnpackUInt16(&EMULATE_EEPROM_Memory[CallJetsonCode_LSB]);  // get the current status
+       CurrentStatus |= WarnCode;// TODO: Do we want to check if this is already set? set the bit
+       MAP_PackUInt16(CurrentStatus,&EMULATE_EEPROM_Memory[CallJetsonCode_LSB]); //write it back
+       
+        // Interrupt the jetson - it should read the read the code and know what to do.
+        INTERRUPT_TO_JETSON_SetHigh();
+        __delay_ms(10);
+        INTERRUPT_TO_JETSON_SetLow();   
+}
+
+void ClearWarnCodeToJetson(uint16_t WarnCode)
+{
+    uint16_t CurrentStatus;
+      // Set the code to inform the something has changed.
+    // jetson then knows where to look by reading EMULATE_EEPROM_Memory[CallJetsonCode_Addr]
+    
+       CurrentStatus= MAP_UnpackUInt16(&EMULATE_EEPROM_Memory[CallJetsonCode_LSB]);  // get the current status
+       CurrentStatus &= ~WarnCode;// TODO: Do we want to check if this is already set?   Clear the bit if set.
+       MAP_PackUInt16(CurrentStatus,&EMULATE_EEPROM_Memory[CallJetsonCode_LSB]); //write it back
+               
+        // Interrupt the jetson - it should read the read the code and know what to do.
+        INTERRUPT_TO_JETSON_SetHigh();
+        __delay_ms(10);
+        INTERRUPT_TO_JETSON_SetLow();   
+}
+
+
+

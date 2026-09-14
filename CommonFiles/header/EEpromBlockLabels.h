@@ -40,7 +40,8 @@ extern "C" {
 // 'Hard coded' parameters that are used by the subsystem build, 
 // to be  checked/ updated on any release
 //These are not, in this form, directly used by the 
-#define   TableVersion 255   // was 1, due an up issue testing
+#define   TableVersion 2   //Version 2 - added power handling and jetson calls/alerts
+    
     
 
 
@@ -79,16 +80,7 @@ extern "C" {
 #define BatteryPackVoltage_Addr (BatteryChargeState_Addr + BatteryChargeStateNumBytes )  //in mv, 0-65535
 #define BatteryPackVoltageNumBytes 2
     
-    
-
-    
-    
-    
-
-    
-    
-    
-
+  
  //READ ONLY Block 2   
  // addresses and field sizes of High order read only parameters 
  // at some point, the high order parameters MAY get backed up into a non-vol area of the pic.
@@ -110,8 +102,8 @@ extern "C" {
 #define TicksPerSecondAddr (HardwareVersionAddr - HardwareVersionNumBytes)  // the conversion factor to turn TransitTimeTicks into seconds 
 #define TicksPerSecondNumBytes 4
     
- #define TicksPerSecMMSB  TicksPerSecondAddr
- #define TicksPerSecNMSB  ( TicksPerSecMMSB - 1 )
+#define TicksPerSecMMSB  TicksPerSecondAddr
+#define TicksPerSecNMSB  ( TicksPerSecMMSB - 1 )
 #define TicksPerSecHLSB  ( TicksPerSecNMSB - 1 )
 #define TicksPerSecLLSB  ( TicksPerSecHLSB - 1 )
     
@@ -133,10 +125,14 @@ extern "C" {
 #define Accl_CalX_MSB_Addr ( Accl_CalY_LSB_Addr - 1)
 #define Accl_CalX_LSB_Addr (Accl_CalX_MSB_Addr -1 )  
     
-// Call Jetson code -- a range from 1-255 , (0 means nope, didn't call)
+// Call Jetson code -- 16 bit bitfield, see  , 
 #define CallJetsonCode_Addr (Accel_Cal_Addr - Accel_Cal_NumBytes)
-#define CallJetsonCode_NumBytes 1  
+#define CallJetsonCode_NumBytes 2  
     
+#define CallJetsonCode_MSB CallJetsonCode_Addr
+#define CallJetsonCode_LSB ( CallJetsonCode_Addr  - 1 )  
+    
+   
     
     
 
@@ -170,29 +166,22 @@ extern "C" {
     
 #define ResetSubsysConfirmAddr ( ResetSubsysAddr + ResetSubsysNumBytes)
 #define ResetSubsysConfirmNumBytes 1
- 
+   //General purpose calling code - Set this, then use the ResetSybSys//ConfirmResetSubsys pattern to activate
+    // These are locked as they have forced reset, power cycles, etc.
+#define JetsonCallingCode_Addr ( ResetSubsysConfirmAddr + ResetSubsysNumBytes)
+#define JetsonCallingCodeNumBytes  1
+    
 //    
-//Jetson sets this to advise that it has read the call code and is doing something about it 
+//Jetson sets  this to advise that it has read the call code and is doing something about it 
 //Sub system clears it and may then pull new code onto stack if one waiting.
 // This MAY be also used as a back channel TBD
-#define JetsonAcknowledgeCall_Addr ( ResetSubsysConfirmAddr + ResetSubsysConfirmNumBytes )   
+#define JetsonAcknowledgeCall_Addr ( JetsonCallingCode_Addr + JetsonCallingCodeNumBytes )   
 #define JetsonAcknowledgeNumBytes 1
  
     
-   //General purpose calling code - Set this, then use the ResetSybSys//ConfirmResetSubsys pattern to activate
-    // These are locked as they have forced reset, power cycles, etc.
-#define JetsonCallingCode_Addr ( JetsonAcknowledgeCall_Addr + JetsonAcknowledgeNumBytes )
-#define JetsonCallingCodeNumBytes = 1
+  
     
-    
-    
-    
-
-    
-
-    
-    
-
+   
  // Other labels- not memory addresses....
  // but are specific values that may be posted 
  
@@ -202,21 +191,31 @@ extern "C" {
 // there will be a value posted  in location "CallJetsonCode_Addr"
 // which the jetson reads and acts upon
 
-#define NoAlarmsAndNoSurprises   0 // default value, Nothing to see here.
-#define PowerOff_1_min  1  // The power to the jetson is going to be removed in 1 minute, so shutdown please
-#define LowBatteryVoltage 2 // The battery voltage is low, the jetson may want to raise a gui alet to the user.
-#define LowCharge 3   // General warning, not critical, gui alert to user
-#define CriticalCharge 4 // warning to user, may shut down soon 
-#define BallStrike 5 // accelerometer indicates the gate has been knocked, or a ball strike , or some other impact event that has had minimal effect on orientation
-#define GateMoving 6 // The gate appears to have been picked up. Lasers are off, will remain so until correct orientation for a few second
-#define GateInvalidOrientation 7 // The gate has a tilt greater that TBD X degrees
-#define GateOrienationRestored 8 // Should only occur when an invalid orientation occured, and is now rectified 
+#define PowerOff_1_min  0x0001  // The power to the jetson is going to be removed in 1 minute, so shutdown please. 
+#define LowBatteryWarning 0x0002 // The battery voltage or charge is low,(may also include temperature) the jetson may want to raise a gui alet to the user.
+#define LowBatteryCritical 0x0004   // charge or other critical battery pack issue , jetson to warn user as forced shut down 1 min. Jetson MAY chose to read regs and try and figure out why?
+#define Spare1 0x0008 // 
+#define BallStrike 0x0010 // accelerometer indicates the gate has been knocked, or a ball strike , or some other impact event that has had minimal effect on orientation
+#define GateMoving 0x0020 // The gate appears to have been picked up. Lasers are off, will remain so until correct orientation for a few second
+#define GateInvalidOrientation 0x0040 // The gate has a tilt greater that TBD X degrees
+#define Spare2 0x0080 // 
+#define Spare3 0x0100 
+#define Spare4 0x0200 // 
+#define Spare5 0x0400
+#define Spare6 0x0800
+#define Spare7 0x1000 // 
+#define Spare8 0x2000 
+#define Spare9 0x4000 // 
+#define Spare10 0x8000
 
                                
     
+//Codes when the Jetson is calling the subsys -- 
+#define Nothing  0   // jetson must have pocket dialled, nothing to do         
+#define JetsonIsShuttingDown 1   // jetson is shutting from gui or other cause, Subsytem to power down in 1 minute please
 
     
-    
+ 
     
 
                          

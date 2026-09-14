@@ -20,7 +20,9 @@
  * another - the accelerometer Z pair was packed big-endian while X and Y were
  * little-endian, and the only symptom was one axis reading nonsense.
  */
+void MAP_PackUInt16(uint16_t u, uint8_t *lsb);
 void    MAP_PackInt16(int16_t value, uint8_t *lsb);
 int16_t MAP_UnpackInt16(const uint8_t *lsb);
+uint16_t MAP_UnpackUInt16(const uint8_t *lsb);
 
 #endif /*ARRAYUTILS_H*/

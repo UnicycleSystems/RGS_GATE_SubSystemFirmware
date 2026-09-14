@@ -38,6 +38,8 @@
       <itemPath>../CommonFiles/header/persist_store.h</itemPath>
       <itemPath>../CommonFiles/header/flash.h</itemPath>
       <itemPath>../CommonFiles/header/pitchandroll.h</itemPath>
+      <itemPath>../CommonFiles/header/i2c2_helpers.h</itemPath>
+      <itemPath>../CommonFiles/header/lis2dw12_i2c2.h</itemPath>
       <itemPath>InitEEpromVals.h</itemPath>
       <itemPath>../CommonFiles/header/ArrayUtils.h</itemPath>
     </logicalFolder>
@@ -106,6 +108,8 @@
       <itemPath>../CommonFiles/source/pitchandroll.c</itemPath>
       <itemPath>InitEEpromVals.c</itemPath>
       <itemPath>../CommonFiles/source/ArrayUtils.c</itemPath>
+      <itemPath>../CommonFiles/source/i2c2_helpers.c</itemPath>
+      <itemPath>../CommonFiles/source/lis2dw12_i2c2.c</itemPath>
     </logicalFolder>
   </logicalFolder>
   <sourceRootList>
@@ -571,7 +575,7 @@
         <targetDevice>PIC24FJ64GA004</targetDevice>
         <targetHeader></targetHeader>
         <targetPluginBoard></targetPluginBoard>
-        <platformTool>ICD4Tool</platformTool>
+        <platformTool>pk4hybrid</platformTool>
         <languageToolchain>XC16</languageToolchain>
         <languageToolchainVersion>2.10</languageToolchainVersion>
         <platform>3</platform>
@@ -1058,7 +1062,7 @@
                   value="${memories.instruction.ram.ranges}"/>
         <property key="memories.programmemory" value="true"/>
         <property key="memories.programmemory.ranges" value="0-abfb"/>
-        <property key="poweroptions.powerenable" value="true"/>
+        <property key="poweroptions.powerenable" value="false"/>
         <property key="programmerToGoFilePath"
                   value="C:/Users/peterbrewster/OneDrive - Unicycle Systems LTD/UnicycleProjectCentral/2.Active/RGS/RGS_BringUp.X/debug/standalone/RGS_BringUp_ptg"/>
         <property key="programmerToGoImageName" value="RGS_BringUp_ptg"/>

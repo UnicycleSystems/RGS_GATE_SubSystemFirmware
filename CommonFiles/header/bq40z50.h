@@ -117,6 +117,10 @@
 
 /* SBS commands used by the status report. Current() and friends are SIGNED:
  * negative is discharge. */
+#define BQ_CMD_VOLTAGE            0x09    /* uint16, mV - TOTAL pack voltage.
+                                           * A plain word read, legal in every
+                                           * security mode: no unseal, no
+                                           * ManufacturerAccess needed.      */
 #define BQ_CMD_CURRENT            0x0A    /* int16, mA                       */
 #define BQ_CMD_RSOC               0x0D    /* uint16, %                       */
 #define BQ_CMD_FULL_CHG_CAPACITY  0x10    /* uint16, mAh                     */

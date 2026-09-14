@@ -46,8 +46,8 @@ extern "C" {
         unsigned int SendDownStreamPacket : 1; 
        
         unsigned int Send4Cells :1; // Rename is assigned
-        unsigned int Spare2 :1; // don't forget to update in Events.c if
-        unsigned int Spare3 :1; // used
+        unsigned int Reserved2 :1; // don't forget to update in Events.c if
+        unsigned int Reserved3 :1; // used
         
         
         //etc, so up to 16 flags in total

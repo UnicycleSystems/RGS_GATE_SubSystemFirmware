@@ -15,6 +15,8 @@
 #include "../CommonFiles/header/pin_manager.h"
 #include "../CommonFiles/header/uart1.h"
 #include "../CommonFiles/header/lis2dw12.h"
+#include "../CommonFiles/header/i2c2_helpers.h"
+#include "../CommonFiles/header/lis2dw12_i2c2.h"
 #include "../CommonFiles/header/bq40z50.h"
 
 #include <stdbool.h>
@@ -40,17 +42,8 @@
 //commented out here, copied to top, but preserved for moving to header file
 /* ---- LIS2DW12 / LIS2DW1TR basics ---- */
 
-#define REG_WHO_AM_I        0x0F    /* expect 0x44 */
-#define REG_CTRL1           0x20
-#define REG_CTRL2           0x21
-#define REG_CTRL6           0x25
-#define REG_OUT_X_L         0x28    /* then X_H, Y_L, Y_H, Z_L, Z_H */
 
-#define CTRL2_BDU           (1u << 3)
-#define CTRL2_IF_ADD_INC    (1u << 2)
 
-#define LIS_ADDR_0 0x18
-#define LIS_ADDR_1 0x19
 #define ButtonDelay 5    // The number of cycles of the button hold to return 'true)
                          // NOT debounce, this is the long (ish)user press and hold
 
@@ -68,19 +61,11 @@ void DummyTask(void);
 
 
 
-static uint8_t s_addr = LIS_ADDR_1;
-void LIS2DW12_SetAddress_I2C2(uint8_t addr) { s_addr = addr; }
-static bool i2c2_wait_done(volatile I2C2_MESSAGE_STATUS *st, uint16_t timeout_ms);
-static bool i2c2_write_u8(uint8_t dev7, uint8_t reg, uint8_t val);
-static bool i2c2_read_regs(uint8_t dev7, uint8_t start_reg, uint8_t *dst, uint8_t n);
 //end accelerometer specific defines
 
 // accelerometer prototypes
 //void LIS2DW12_SetAddress_I2C2(uint8_t addr);
 void QuickAcellerometerGrabber(void);
-bool LIS2DW12_Init_I2C2(void);                 // returns true on success
-bool LIS2DW12_ReadXYZ_I2C2(int16_t *x, int16_t *y, int16_t *z);
-static bool lis_probe_addr(uint8_t addr);
 
 //end accelerometer prototypes
 
@@ -1584,114 +1569,9 @@ static void small_delay(void)
 
 /* ---- Low-level helpers using ONLY your TRB API ---- */
 
-static bool i2c2_wait_done(volatile I2C2_MESSAGE_STATUS *st, uint16_t timeout_ms)
-{
-    while (*st == I2C2_MESSAGE_PENDING) {
-        __delay_ms(1);
-        ClrWdt();
-        if (timeout_ms-- == 0) return false;   // timeout
-    }
-    return true;
-}
-
-
-static bool i2c2_write_u8(uint8_t dev7, uint8_t reg, uint8_t val)
-{
-    volatile I2C2_MESSAGE_STATUS st = I2C2_MESSAGE_PENDING;
-    uint8_t w[2] = { reg, val };
-    I2C2_MasterWrite(w, 2, dev7, (I2C2_MESSAGE_STATUS*)&st);
-    return i2c2_wait_done(&st, 50) && (st == I2C2_MESSAGE_COMPLETE);
-}
-
 /* Proper repeated-start via TRB pair: write(reg) then read(n) */
 /* Preferred: repeated-start via TRB pair. Falls back to STOP (write then read). */
-static bool i2c2_read_regs(uint8_t dev7, uint8_t start_reg, uint8_t *dst, uint8_t n)
-{
-    volatile I2C2_MESSAGE_STATUS st = I2C2_MESSAGE_PENDING;
-    I2C2_TRANSACTION_REQUEST_BLOCK trb[2];
-
-    I2C2_MasterWriteTRBBuild(&trb[0], &start_reg, 1, dev7);
-    I2C2_MasterReadTRBBuild (&trb[1], dst,        n, dev7);
-    I2C2_MasterTRBInsert(2, trb, (I2C2_MESSAGE_STATUS*)&st);
-
-    if (i2c2_wait_done(&st, 50) && st == I2C2_MESSAGE_COMPLETE)
-        return true;
-
-    // Fallback: STOP between write(reg) and read(n)
-    st = I2C2_MESSAGE_PENDING;
-    I2C2_MasterWrite(&start_reg, 1, dev7, (I2C2_MESSAGE_STATUS*)&st);
-    if (!i2c2_wait_done(&st, 50) || st != I2C2_MESSAGE_COMPLETE) return false;
-
-    st = I2C2_MESSAGE_PENDING;
-    I2C2_MasterRead(dst, n, dev7, (I2C2_MESSAGE_STATUS*)&st);
-    return i2c2_wait_done(&st, 50) && (st == I2C2_MESSAGE_COMPLETE);
-}
-
-static bool i2c2_read_u8(uint8_t dev7, uint8_t reg, uint8_t *val)
-{
-    return i2c2_read_regs(dev7, reg, val, 1);
-}
-
 /* ---- High-level sensor ops ---- */
-
-static bool lis_probe(void)
-{
-    uint8_t id = 0;
-    if (!i2c2_read_u8(s_addr, REG_WHO_AM_I, &id)) return false;
-    return (id == 0x44);
-}
-
-bool LIS2DW12_Init_I2C2(void)
-{
-    EMULATE_EEPROM_Memory[30] = 0xA1;     // entered init
-
-    s_addr=0x18;
-
-    EMULATE_EEPROM_Memory[31] = s_addr;
-    
-    
-// Explicitly enter power-down
-    if (!i2c2_write_u8(s_addr, REG_CTRL1, 0x00))
-    {
-        EMULATE_EEPROM_Memory[33] = 0xC0;
-        return false;
-    }
-    
-    if (!i2c2_write_u8(s_addr, REG_CTRL2, 0x0C))
-        { EMULATE_EEPROM_Memory[32] = 0xC2; return false; }
-
-   
-    
-    if (!i2c2_write_u8(s_addr, REG_CTRL6, 0xC4))   // ~100 Hz, FS �2g
-        { EMULATE_EEPROM_Memory[33] = 0xC1; return false; }
-    
-     if (!i2c2_write_u8(s_addr, REG_CTRL1, 0x24))   // ~100 Hz, FS �2g
-        { EMULATE_EEPROM_Memory[33] = 0xC1; return false; }
-
-    EMULATE_EEPROM_Memory[34] = 0x00;     // success
-    return true;
-}
-
-bool LIS2DW12_ReadXYZ_I2C2(int16_t *x, int16_t *y, int16_t *z)
-{
-    uint8_t raw[6];
-    if (!i2c2_read_regs(s_addr, REG_OUT_X_L, raw, 6)) return false;
-
-    *x = (int16_t)((uint16_t)raw[1] << 8 | raw[0]);
-    *y = (int16_t)((uint16_t)raw[3] << 8 | raw[2]);
-    *z = (int16_t)((uint16_t)raw[5] << 8 | raw[4]);
-    *x>>=2;
-    *y>>=2;
-    *z>>=2;
-          
-    return true;
-}
-
-static bool lis_probe_addr(uint8_t addr)
-{
-    uint8_t id = 0;
-    return i2c2_read_regs(addr, REG_WHO_AM_I, &id, 1) && (id == 0x44);
-}
 
 void QuickAcellerometerGrabber(void)
 {

@@ -17,7 +17,9 @@ static const uint8_t block_start_address[] =
     ConfigAccelerometerAddr,
     GeneralPurposeJobBufferAddr,
     ResetSubsysAddr,
-    ResetSubsysConfirmAddr
+    ResetSubsysConfirmAddr,
+    JetsonCallingCode_Addr,
+    JetsonAcknowledgeCall_Addr
 };
 
 // Table of block lengths, in the same order as block_start_address[] above.
@@ -30,10 +32,12 @@ static const uint8_t block_length[] =
     ConfigAccelerometerNumBytes,
     GeneralPurposeJobBufferNumBytes,
     ResetSubsysNumBytes,
-    ResetSubsysConfirmNumBytes
+    ResetSubsysConfirmNumBytes,
+    JetsonCallingCodeNumBytes,
+    JetsonAcknowledgeNumBytes
 };
 
-#define NUM_BLOCKS 8
+#define NUM_BLOCKS 10
 
 bool AddressBlock_Lookup(uint8_t address,uint8_t write_len, uint8_t *index_out)
 {

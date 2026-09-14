@@ -17,21 +17,23 @@ static volatile uint8_t tail = 0;   // next read index (consumer owns)
 
 //Job queue
 // these are the jobs that are launched by an eeprom write
-#define NUM_EEpromJobs  8
+#define NUM_EEpromJobs 10
 
 //Prototypes for queue job handlers
-void SetLasers();
-void SetIRLevel();
-void SetBallSpeedCal(); //allows jetson to calibrate ball speed, with the 'SetTicksPerSecond' propert)
-void ChangeMode();   // go into other modes - eg survey, self test, etc
+void SetLasers(void);
+void SetIRLevel(void);
+void SetBallSpeedCal(void); //allows jetson to calibrate ball speed, with the 'SetTicksPerSecond' propert)
+void ChangeMode(void);   // go into other modes - eg survey, self test, etc
 void ConfigAccelerometer();
 void GenPurpJob();
 void InitSelfReset();  // First stage of reset mechanism
 void ConfirmSelfReset();// second stage of reset mechanism-- do within 10s of InitSelfReset
-
+void CancelReset(void);
+void JetsonCallingSubsys(void);
+void JetsonAcknowledgeCall(void);
 // the array below is all the function pointers... it's helpful if these are in the same
 //order as the #defienes in EEpromBlockLbels.h
-void (*EEPromJob[NUM_EEpromJobs])(void)={SetLasers,SetIRLevel,SetBallSpeedCal,ChangeMode,ConfigAccelerometer,GenPurpJob,InitSelfReset,ConfirmSelfReset};
+void (*EEPromJob[NUM_EEpromJobs])(void)={SetLasers,SetIRLevel,SetBallSpeedCal,ChangeMode,ConfigAccelerometer,GenPurpJob,InitSelfReset,ConfirmSelfReset,JetsonCallingSubsys,JetsonAcknowledgeCall};
 uint8_t EEpromJobIndex;
 
 
@@ -141,7 +143,7 @@ void SetIRLevel()
 }
 void SetBallSpeedCal() //allows jetson to calibrate ball speed
 {
-    
+    return;
 }
 
 
@@ -193,9 +195,17 @@ void CancelReset()// if confirm reset not called in time, then clear
 
 void ConfigAccelerometer()
 {
-    
+   return; 
 }
 void GenPurpJob()
 {
-    
+  return;  
+}
+void JetsonCallingSubsys()
+{
+    return;
+}
+void JetsonAcknowledgeCall()
+{
+    return;
 }
