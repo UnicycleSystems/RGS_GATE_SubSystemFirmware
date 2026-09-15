@@ -361,7 +361,12 @@ int main(void)
  
    // INTERRUPT_TO_JETSON_SetLow();
     RestoreDetect();
-   
+
+    /* Free I2C2 before its first use. The pack FETs keep every I2C2 device
+     * powered through a PIC reset, so one caught mid-transfer by the reset
+     * can still be holding SDA low - and will stay that way, restart after
+     * restart, until something clocks it out. BringUp does the same. */
+    i2c2_bus_unwedge();
     LIS2DW12_Init_I2C2();    // TODO: should ensure it inits, or returns an error
   //  uint8_t id = 0x00;
 
@@ -885,14 +890,28 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
     BI_LED_RED_SetHigh();//Turn on Red LED
     ClrWdt();
 
-    if (i2c2_read_regs(BQ40Z50_I2C_ADDRESS, BQ_CMD_VOLTAGE, raw, 2))// 
+    /* Read once; if that fails, free the bus, reset the driver and try again.
+     * The unwedge also drops any transfer the failed read left queued, which
+     * would otherwise go on making later I2C2 requests fail instantly. */
+    if (!i2c2_read_regs(BQ40Z50_I2C_ADDRESS, BQ_CMD_VOLTAGE, raw, 2))
     {
-        EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr]     = raw[0];  /* LSB */
-        EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr + 1] = raw[1];  /* MSB */
+        i2c2_bus_unwedge();
+        if (!i2c2_read_regs(BQ40Z50_I2C_ADDRESS, BQ_CMD_VOLTAGE, raw, 2))
+        {
+            /* Still no reading. Leave the published voltage as it was - stale
+             * is less misleading than a sudden zero, which would read as a
+             * flat pack - and skip the thresholds: raw was never filled, so
+             * judging it would act on whatever was left on the stack, and
+             * could walk the unit towards a false power-off. */
+            BI_LED_GREEN_SetHigh();//Turn on Green LED
+            BI_LED_RED_SetLow();//Turn off Red LED
+            return(warning);
+        }
     }
-    /* A failed read leaves the previous value in place. Stale is less
-     * misleading here than a sudden zero, which would read as a flat pack. */
+    EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr]     = raw[0];  /* LSB */
+    EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr + 1] = raw[1];  /* MSB */
     voltagemv= MAP_UnpackInt16(raw);
+
     if (voltagemv<(VoltageThresholds[VoltageThresholdNow]))  //12v is a nominal, test figure, 3V per cell
     {
         
@@ -933,6 +952,9 @@ uint8_t GetAccel(void)
 {
     uint8_t warning;
     warning=0;
+
+
+
     BI_LED_GREEN_SetLow();//Turn off Green LED
     BI_LED_RED_SetHigh();//Turn on Red LED
     if(QuickAcellerometerGrabber())   //returns any non zero for warning

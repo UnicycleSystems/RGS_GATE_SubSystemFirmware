@@ -194,7 +194,14 @@ static I2C_TR_QUEUE_ENTRY            *p_i2c2_current = NULL;
 
 void I2C2_Initialize(void)
 {
-    
+    /* HAND EDIT - not from MCC; keep if this file is ever regenerated.
+     * Also return the state machine to idle. MCC only resets the queue, so
+     * after a transfer that never finished (a timeout) the state stayed
+     * mid-transfer, and I2C2_MasterTRBInsert() - which only starts a
+     * transfer from idle - then left every later request unstarted. Harmless
+     * at power-up, where the state is already idle. */
+    i2c2_state = S_MASTER_IDLE;
+
     i2c2_object.pTrHead = i2c2_tr_queue;
     i2c2_object.pTrTail = i2c2_tr_queue;
     i2c2_object.trStatus.s.empty = true;

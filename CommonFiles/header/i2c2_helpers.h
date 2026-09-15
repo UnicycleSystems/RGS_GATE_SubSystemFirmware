@@ -44,6 +44,15 @@ bool i2c2_read_regs(uint8_t dev7, uint8_t start_reg, uint8_t *dst, uint8_t n);
 /* Read a single register. */
 bool i2c2_read_u8(uint8_t dev7, uint8_t reg, uint8_t *val);
 
+/* Clock out any device holding SDA low, then reset the driver - which also
+ * empties its queue of transfers abandoned by a timeout. Call before the
+ * first I2C2 access after reset, and after a read that fails.
+ *
+ * Takes ~15 ms on a healthy bus. Every step is capped at ~20 ms, so a line
+ * that is truly stuck cannot hang it. Reports nothing: follow it with a real
+ * read to find out whether the bus is usable. */
+void i2c2_bus_unwedge(void);
+
 #ifdef __cplusplus
 }
 #endif
