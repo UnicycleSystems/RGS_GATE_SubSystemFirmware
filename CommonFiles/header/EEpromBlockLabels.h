@@ -194,7 +194,7 @@ extern "C" {
 #define PowerOff_1_min  0x0001  // The power to the jetson is going to be removed in 1 minute, so shutdown please. 
 #define LowBatteryWarning 0x0002 // The battery voltage or charge is low,(may also include temperature) the jetson may want to raise a gui alet to the user.
 #define LowBatteryCritical 0x0004   // charge or other critical battery pack issue , jetson to warn user as forced shut down 1 min. Jetson MAY chose to read regs and try and figure out why?
-#define Spare1 0x0008 // 
+#define BatteryPackCommsFailure 0x0008 // appears to be a block on the i2c bus to the battery pack. Continue at your own peril
 #define BallStrike 0x0010 // accelerometer indicates the gate has been knocked, or a ball strike , or some other impact event that has had minimal effect on orientation
 #define GateMoving 0x0020 // The gate appears to have been picked up. Lasers are off, will remain so until correct orientation for a few second
 #define GateInvalidOrientation 0x0040 // The gate has a tilt greater that TBD X degrees

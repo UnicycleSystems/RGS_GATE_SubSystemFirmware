@@ -885,11 +885,14 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
     uint8_t raw[2];
     uint16_t voltagemv;
     uint16_t warning;
+    uint8_t FuelGuagePercent;
     warning=0;
     BI_LED_GREEN_SetLow();//Turn off Green LED
     BI_LED_RED_SetHigh();//Turn on Red LED
     ClrWdt();
 
+    
+    warning&=~BatteryPackCommsFailure; // Clear the comms error, even if there wasnt' one
     /* Read once; if that fails, free the bus, reset the driver and try again.
      * The unwedge also drops any transfer the failed read left queued, which
      * would otherwise go on making later I2C2 requests fail instantly. */
@@ -905,12 +908,17 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
              * could walk the unit towards a false power-off. */
             BI_LED_GREEN_SetHigh();//Turn on Green LED
             BI_LED_RED_SetLow();//Turn off Red LED
+            warning|=BatteryPackCommsFailure;
             return(warning);
         }
     }
-    EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr]     = raw[0];  /* LSB */
-    EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr + 1] = raw[1];  /* MSB */
-    voltagemv= MAP_UnpackInt16(raw);
+    else  // if it fails to read, then don't update the record
+    {
+        EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr]     = raw[0];  /* LSB */
+        EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr + 1] = raw[1];  /* MSB */
+        voltagemv= MAP_UnpackInt16(raw);
+        
+    }
 
     if (voltagemv<(VoltageThresholds[VoltageThresholdNow]))  //12v is a nominal, test figure, 3V per cell
     {
@@ -933,6 +941,9 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
            
     }
     
+    
+    
+    
     //Quick sanity check if voltage gone up again recently - ie has previously passed at least two thresholds, but is now above the higher threshold, then call it all off
     if ( (voltagemv>=(VoltageThresholds[0])) && (VoltageThresholdNow>=2) )  
     {
@@ -941,6 +952,70 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
         warning&=~LowBatteryWarning;
         warning&=~LowBatteryCritical;
     }
+    
+    //copy the voltage code, then edit for charge%
+    
+      if (!i2c2_read_regs(BQ40Z50_I2C_ADDRESS, BQ_CMD_RSOC, raw, 2))
+    {
+        i2c2_bus_unwedge();
+        if (!i2c2_read_regs(BQ40Z50_I2C_ADDRESS, BQ_CMD_RSOC, raw, 2))
+        {
+            /* Still no reading. Leave the published voltage as it was - stale
+             * is less misleading than a sudden zero, which would read as a
+             * flat pack - and skip the thresholds: raw was never filled, so
+             * judging it would act on whatever was left on the stack, and
+             * could walk the unit towards a false power-off. */
+            BI_LED_GREEN_SetHigh();//Turn on Green LED
+            BI_LED_RED_SetLow();//Turn off Red LED
+            warning|=BatteryPackCommsFailure;
+            return(warning);
+        }
+    }
+    else  // if it fails to read, then don't update the record
+    {
+        EMULATE_EEPROM_Memory[BatteryChargeState_Addr]     = raw[0];  /* LSB */
+      
+        FuelGuagePercent= raw[0];
+        
+    }
+//#define CheckFuelGuage    
+#ifdef CheckFuelGuage
+    if (FuelGaugPercent<(ChargeThresholds[VoltageThresholdNow]))  //12v is a nominal, test figure, 3V per cell
+    {
+        
+        if(ChargeThresholdNow>=4)
+        {
+           warning|=LowBatteryCritical; 
+            
+            if(ChargeCriticalCount>=3)
+                warning|=PowerOff_1_min;
+                
+            
+            ChargeCriticalCount++;
+        }
+        else
+        {
+            warning|=LowBatteryWarning;//May get modified to  critical 
+            ChargeThresholdNow++;
+        }
+           
+    }
+    
+    
+    
+    
+    //Quick sanity check if voltage gone up again recently - ie has previously passed at least two thresholds, but is now above the higher threshold, then call it all off
+    if ( (FuelGuagePercent>=(ChargeThresholds[0])) && (ChargeThresholdNow>=2) )  
+    {
+        ChargeThresholdNow=0;
+        CriticalCount=0;
+        warning&=~LowBatteryWarning;
+        warning&=~LowBatteryCritical;
+    }
+ #endif  
+    
+    
+    
             
     ClrWdt();
     BI_LED_GREEN_SetHigh();//Turn off Green LED
