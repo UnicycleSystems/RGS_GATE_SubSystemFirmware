@@ -6,6 +6,10 @@ REM   release_build.bat
 REM
 REM Does the lot, in order:
 REM
+REM   0. Publishes the shared EEPROM map from CommonFiles\header to
+REM      C:\SubSystemFirmware: EEpromBlockLabels.h copied as-is, and
+REM      EEpromBlockLabels_h_InPython.py GENERATED from it by
+REM      eeprom_header_to_python.py (needs Python 3.6+ on PATH)
 REM   1. Bootloader_V2      default              -> ...\Bootloader
 REM   2. RGS_BringUp        standalone + default -> ...\BringUp\Standalone
 REM                                                 ...\BringUp\Default
@@ -36,8 +40,10 @@ REM number is the most recent previous copy. That matters because these folders
 REM are an archive: rebuilding without bumping firmware_version.h would
 REM otherwise silently replace a released image with a different binary
 REM carrying the same version number.
-REM   (Exception: C:\SubSystemFirmware\Production is emptied outright, by
-REM    design - it holds exactly one image and history lives in the archive.)
+REM   (Exceptions: C:\SubSystemFirmware\Production and BringUp_FirstRun are
+REM    emptied outright, by design - each holds exactly one image and history
+REM    lives in the archive. The two EEPROM map files from step 0 are simply
+REM    overwritten; git keeps their history.)
 REM
 REM Compiler warnings are counted and listed for every build. A build FAILURE
 REM aborts the whole script, so a bad build can never reach Production.
@@ -53,10 +59,19 @@ set "HEXMATE=C:\Program Files\Microchip\MPLABX\v6.25\mplab_platform\bin\hexmate.
 set "DEST=C:\SubSystemFirmware\PreviousReleasedHexFiles"
 set "PROD=C:\SubSystemFirmware\Production"
 set "FIRSTRUN=C:\SubSystemFirmware\BringUp_FirstRun"
+set "SUBSYS=C:\SubSystemFirmware"
+set "MAPH=%ROOT%CommonFiles\header\EEpromBlockLabels.h"
+set "MAPCONV=%ROOT%eeprom_header_to_python.py"
 
 if not exist "%MAKEBIN%\make.exe" ( echo ERROR: make.exe not found in "%MAKEBIN%" & exit /b 1 )
 if not exist "%HEXMATE%"          ( echo ERROR: hexmate not found: "%HEXMATE%"    & exit /b 1 )
 if not exist "%MPLABBIN%\prjMakefilesGenerator.bat" ( echo ERROR: prjMakefilesGenerator not found & exit /b 1 )
+if not exist "%MAPCONV%"          ( echo ERROR: converter not found: "%MAPCONV%"  & exit /b 1 )
+
+REM Python runs the EEPROM map converter (step 0). Checked by RUNNING it, not
+REM with "where": Windows ships a python.exe stub that only opens the Store.
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 6) else 1)" >nul 2>&1
+if errorlevel 1 ( echo ERROR: Python 3.6 or later not found on PATH - needed for step 0 & exit /b 1 )
 
 set "PATH=%MAKEBIN%;%PATH%"
 
@@ -73,6 +88,31 @@ call :getver "%ROOT%PuttingGate.X\firmware_version.h"   PGVER   || exit /b 1
 echo   Bootloader_V2 : v%BOOTVER:_=.%
 echo   RGS_BringUp   : v%BRINGVER:_=.%
 echo   PuttingGate   : v%PGVER:_=.%
+echo.
+
+REM ---- 0. publish the shared EEPROM map --------------------------------------
+REM EEpromBlockLabels.h is the one definition of the emulated EEPROM, shared by
+REM the firmware and the Jetson. It is published from the SAME copy the builds
+REM below compile, so a release's map always matches its firmware; and it goes
+REM first, so a header that will not convert stops the release before minutes
+REM of building rather than after.
+REM
+REM The .py is GENERATED, never hand-edited: the converter translates only what
+REM it can translate exactly and refuses anything else, naming the line. It
+REM imports its own output before replacing the old file, so a failure leaves
+REM the previous copy in place.
+REM
+REM Both files are overwritten, not archived: scripts import the .py by that
+REM name from that folder, so _prevN copies would only clutter it, and git
+REM keeps the history.
+echo [0] publishing EEPROM map to %SUBSYS%
+if not exist "%MAPH%" ( echo     ERROR: %MAPH% not found & exit /b 1 )
+python "%MAPCONV%" "%MAPH%" "%SUBSYS%\EEpromBlockLabels_h_InPython.py" >nul
+if errorlevel 1 ( echo     ERROR: EEpromBlockLabels.h did not convert - see above & exit /b 1 )
+copy /Y "%MAPH%" "%SUBSYS%\EEpromBlockLabels.h" >nul
+if errorlevel 1 ( echo     ERROR: copy of EEpromBlockLabels.h failed & exit /b 1 )
+echo     -^> %SUBSYS%\EEpromBlockLabels_h_InPython.py
+echo     -^> %SUBSYS%\EEpromBlockLabels.h
 echo.
 
 REM ---- 1. Bootloader, default ------------------------------------------------

@@ -886,7 +886,7 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
     uint16_t voltagemv;
     uint16_t warning;
     uint8_t FuelGuagePercent;
-    warning=0;
+    //warning=0;
     BI_LED_GREEN_SetLow();//Turn off Green LED
     BI_LED_RED_SetHigh();//Turn on Red LED
     ClrWdt();

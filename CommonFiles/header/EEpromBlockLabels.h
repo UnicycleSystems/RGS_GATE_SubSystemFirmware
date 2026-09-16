@@ -41,44 +41,121 @@ extern "C" {
 // to be  checked/ updated on any release
 //These are not, in this form, directly used by the 
 #define   TableVersion 2   //Version 2 - added power handling and jetson calls/alerts
-    
-    
+ // -------   *****  Please do read this. It's not hard. ***********  
+ //---------------------!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!-----------------------
+ // 
+ //             FAO: any devs writing code that talks to the emulated eeprom on this device
+ //             (ie the client code on Jetson or other   )
+ //
+ //             NOTE: use of alias's in the addressing schem.
+ /*      
+               This table is a convenient block of 256 bytes. The first half,
+  (0 - 127 is strictly READ only from client side . The second half,
+  128-255  is writeable, and is used to launch 'jobs' here.
+  
+  There is a complexity arising. The table was intended to have a short section and the 
+  beginning that would be always read in one long packed, whereas the remainder is 
+  to be read randomly, and at random packetlengths. Thus the first half of the table
+  grows naturally from 0 to whereever it ends. The second half of the table grows from
+  127 downwards, ie the space is used decrementally. This was to allow both sections to
+  be added to, with arbitary gaps, needs to re-align, etc. 
+  All of these are read LSB first. (or just 'value' in the case of a byte value)
+  To create some consistency in the naming, alias's have been added for all parameters
+  in that Read-only half. 
+  * 
+  * For example the address to read the Battery Pack voltage,
+  *   BatteryPackVoltage_Addr  has an alias,
+  * #define BattVoltReadAddr  BatteryPackVoltage_Addr
+  * 
+  * which may seem supreflous,
+  * 
+  * However, in the later part of the table, the derivation of the addresses
+  * is inconsistent, so for example,  FirmwareVersionAddr actually points at the MSB
+  * an alias is created to correct this.
+  * 
+  * #define FirmwareVerReadAddr FirmwareVersionLSB
+  * 
+  * each of these alias's ais the final entry in each sub-group,
+  * with a blank line between the body of the group, and the alias
+  * for example
+  
+  #define FirmwareVersionAddr (TableVersionAddr - TableVersionNumBytes)
+  #define FirmwareVersionNumBytes 2
+  #define FirmwareVersionMSB FirmwareVersionAddr
+  #define FirmwareVersionLSB  ( FirmwareVersionMSB - 1 )
+  
+  #define FirmwareVerReadAddr (FirmwareVersionLSB)  //!client side read address    
+   
+  
+  
+  * where the last line #define FirmwareVerReadAddr FirmwareVersionLSB  
+  * gives FirmwareVerReadAddr   as the definitive programmers reference to index
+  * that memory.
+  * 
+  * the various NumBytes fields are unaffected.
+  * 
+  * The upper table entries (128 onwards) have no such alias's, as they 
+  * are writable, and infact trigger actions etc, completely different behaviour.
+  * 
+  *     !!!!!!!!!!!!!    End of  message. !!!!!!!!!!!!!! 
+  * 
+  * !!! anybody asking a question that implies they have not read this will be 
+  * referred back in no uncertain terms.
+  * 
+ 
+  * 
+  * !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  */
+
 
 
 //  READ ONLY Block 1
 //Addresses and field sizes of low order (frequent) read only data
 
 #define TransitTimeTicksAddr  0        // the raw measurement of ball speed, in  counter ticks
-#define TransitTimeTicksNumBytes 4
- 
+#define TransitTimeTicksNumBytes 4   
+    
+#define TransitTimeReadAddr  (TransitTimeTicksAddr)  //!! client side address alias
     
     
 //Acceleromoter data addresses  
 #define AccelerometerXYZ_RawAddr (TransitTimeTicksAddr + TransitTimeTicksNumBytes)
 #define AccelerometerXYZ_RawNumBytes 6
        
-#define Accl_X_LSB_Addr AccelerometerXYZ_RawAddr
+#define Accl_X_LSB_Addr (AccelerometerXYZ_RawAddr)
 #define Accl_X_MSB_Addr (Accl_X_LSB_Addr + 1)
 #define Accl_Y_LSB_Addr ( Accl_X_MSB_Addr + 1)
 #define Accl_Y_MSB_Addr (Accl_Y_LSB_Addr +1 )   
 #define Accl_Z_LSB_Addr ( Accl_Y_MSB_Addr + 1)
-#define Accl_Z_MSB_Addr (Accl_Z_LSB_Addr +1 )    
+#define Accl_Z_MSB_Addr (Accl_Z_LSB_Addr +1 ) 
+    
+#define AccelXYZReadAddr (Accl_X_LSB_Addr)           // !client side read address alias
+  
+    
+//pitch and roll sub group
     
 #define PitchAndRoll_Addr ( AccelerometerXYZ_RawAddr + AccelerometerXYZ_RawNumBytes)
-#define PitchAndRollNumBytes 4
-    
-#define PitchLSB_Addr PitchAndRoll_Addr
+#define PitchAndRollNumBytes 4   
+#define PitchLSB_Addr (PitchAndRoll_Addr)
 #define PitchMSB_Addr (PitchLSB_Addr + 1)
 #define RollLSB_Addr ( PitchMSB_Addr + 1)
 #define RollMSB_Addr (RollLSB_Addr +1 )
+    
+#define PitchRollReadAddr (PitchAndRoll_Addr)     // !client side read address alias 
+    
     
 //Battery pack info 
     
 #define BatteryChargeState_Addr (PitchAndRoll_Addr + PitchAndRollNumBytes  )   //percentage charge left
 #define BatteryChargeStateNumBytes 1
     
+#define BattChargeStateReadAddr (BatteryChargeState_Addr)   // !client side read address alias 
+
+    
 #define BatteryPackVoltage_Addr (BatteryChargeState_Addr + BatteryChargeStateNumBytes )  //in mv, 0-65535
 #define BatteryPackVoltageNumBytes 2
+#define BattVoltReadAddr  (BatteryPackVoltage_Addr)   //!client side read address alias
+
     
   
  //READ ONLY Block 2   
@@ -86,53 +163,77 @@ extern "C" {
  // at some point, the high order parameters MAY get backed up into a non-vol area of the pic.
  // Note that this is in reverse order (counting down)from 127. This is to allow empty space between 
  // the low and high order tables, useable by a change in either.
+
+//Table version
 #define TableVersionAddr   127
 #define TableVersionNumBytes 1   
     
+#define TableVerReadAddr  (TableVersionAddr)  //  !client side read address alias
+    
 
-       
+ //Firmware version      
 #define FirmwareVersionAddr (TableVersionAddr - TableVersionNumBytes)
 #define FirmwareVersionNumBytes 2
 #define FirmwareVersionMSB FirmwareVersionAddr
 #define FirmwareVersionLSB  ( FirmwareVersionMSB - 1 )
+    
+#define FirmwareVerReadAddr (FirmwareVersionLSB)  //!client side read address alias
 
+//Hardware Version    
 #define HardwareVersionAddr (FirmwareVersionAddr - FirmwareVersionNumBytes)
 #define HardwareVersionNumBytes 2
     
+#define HardwareVerReadAddr (HardwareVersionAddr)    //!client side read address alias
+
+
+// 'ticks per second - conversion constant from timer to seconds    
 #define TicksPerSecondAddr (HardwareVersionAddr - HardwareVersionNumBytes)  // the conversion factor to turn TransitTimeTicks into seconds 
-#define TicksPerSecondNumBytes 4
-    
+#define TicksPerSecondNumBytes 4    
 #define TicksPerSecMMSB  TicksPerSecondAddr
 #define TicksPerSecNMSB  ( TicksPerSecMMSB - 1 )
 #define TicksPerSecHLSB  ( TicksPerSecNMSB - 1 )
 #define TicksPerSecLLSB  ( TicksPerSecHLSB - 1 )
     
-#define LaserStateAddr (TicksPerSecondAddr - TicksPerSecondNumBytes)  // the conversion factor to turn TransitTimeTicks into seconds 
-#define LaserStateNumBytes 1   
+#define TicksPerSecReadAddr (TicksPerSecondAddr)   //!client side read address alias
+
+
+//Laser (and other lights    - a bit field for all the lighting - TODO: best document that here
+#define LaserStateAddr (TicksPerSecondAddr - TicksPerSecondNumBytes)  
+#define LaserStateNumBytes 1 
     
+#define LaserStateReadAddr  (LaserStateAddr)     //!! client side read address alias
+    
+    
+// IR output level - currently not implemented, but hard ware support pending. range 0-100    
 #define IRLevelAddr (LaserStateAddr - LaserStateNumBytes)  
 #define IRLevelNumBytes 1 
- 
+
+#define IRLevelReadAddr (IRLevelAddr)   //!! client side read address aliase
     
- //Accelerometer Cal co-efficients
+ //Accelerometer Cal co-efficients - these are the values that zero the readings
 #define Accel_Cal_Addr (IRLevelAddr - IRLevelNumBytes)
-#define Accel_Cal_NumBytes 6
-       
+#define Accel_Cal_NumBytes 6      
 #define Accl_CalZ_MSB_Addr Accel_Cal_Addr
 #define Accl_CalZ_LSB_Addr (Accl_CalZ_MSB_Addr - 1)
 #define Accl_CalY_MSB_Addr ( Accl_CalZ_LSB_Addr - 1)
 #define Accl_CalY_LSB_Addr (Accl_CalY_MSB_Addr -1 )   
 #define Accl_CalX_MSB_Addr ( Accl_CalY_LSB_Addr - 1)
-#define Accl_CalX_LSB_Addr (Accl_CalX_MSB_Addr -1 )  
+#define Accl_CalX_LSB_Addr (Accl_CalX_MSB_Addr -1 ) 
     
-// Call Jetson code -- 16 bit bitfield, see  , 
+#define AcclCalReadAddr (Accl_CalX_LSB_Addr)   //! client side read addres alias
+    
+// Call Jetson code -- 16 bit bitfield, see  , seperate section "*CallJetson ... 
 #define CallJetsonCode_Addr (Accel_Cal_Addr - Accel_Cal_NumBytes)
 #define CallJetsonCode_NumBytes 2  
-    
 #define CallJetsonCode_MSB CallJetsonCode_Addr
 #define CallJetsonCode_LSB ( CallJetsonCode_Addr  - 1 )  
     
+#define CallJetsCodeReadAddr   (CallJetsonCode_LSB)     //! Client side read Address  alias 
    
+/// *********  END of READ ONLY TABLES   *************************
+// **                                                           **
+// **   The following section does not have alias's
+//****************************************************************
     
     
 
@@ -186,6 +287,8 @@ extern "C" {
  // but are specific values that may be posted 
  
     
+ //******************************   
+ // "CallJetson" codes below:    
 // 'codes' for when the Subsystem calls the jetson
 // when 'call jetson' is asserted by the subsystem,
 // there will be a value posted  in location "CallJetsonCode_Addr"
