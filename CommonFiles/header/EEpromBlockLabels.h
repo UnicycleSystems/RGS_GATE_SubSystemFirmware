@@ -317,18 +317,7 @@ extern "C" {
 #define Nothing  0   // jetson must have pocket dialled, nothing to do         
 #define JetsonIsShuttingDown 1   // jetson is shutting from gui or other cause, Subsytem to power down in 1 minute please
 
-    
  
-    
-
-                         
-
-    
-
-    
-  
-   
-
 
 #ifdef	__cplusplus
 }

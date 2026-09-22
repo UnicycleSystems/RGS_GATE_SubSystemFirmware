@@ -96,6 +96,24 @@ void PowerDown(bool ForcePowerDown);
 
 uint8_t PowerButton (bool OnOff);
 
+/* Debounced power-button reads. See the definitions above PowerButton().
+ * Every test of the button goes through these: a single GetValue() sample
+ * cannot tell a press from contact bounce or a noise glitch, and on this
+ * board that decides whether the unit powers up or shuts down. */
+#define BUTTON_SAMPLE_MS   5    /* gap between samples; bounce is ~1-10 ms */
+#define BUTTON_SETTLE_MS  25    /* agreeing samples needed to call it real */
+#define BUTTON_RELEASE_MS 50    /* longer, to be sure a press is finished  */
+static bool ButtonStable(bool pressed, uint16_t settle_ms);
+static void ButtonWaitReleased(void);
+
+/* /ACOK (RA7) settling - see AcokWaitPresent(). Generous timeout for now; the
+ * measured settle time is recorded in EEPROM byte 19 so it can be set from
+ * data rather than guesswork. */
+#define ACOK_SAMPLE_MS     5
+#define ACOK_SETTLE_MS    25
+#define ACOK_TIMEOUT_MS 2000
+static bool AcokWaitPresent(uint16_t timeout_ms);
+
 // PWM on RB11 via OC3/T3
 #define PWM_RB11_PERIOD   159   // PR3 value: 100kHz at FCY=16MHz (16000000/100000 - 1)
 void PWM_RB11_Init(void);
@@ -151,7 +169,20 @@ int main(void)
      *                      Jetson stays OFF and power-on follows the normal
      *                      charger-loop / button-hold flow.
      */
-    bool warmBoot = ((RCONbits.POR == 0));
+    /* BOR is tested as well as POR. A brown-out sets BOR and leaves POR clear,
+     * so with POR alone a sagging rail read as a WARM boot: no button check,
+     * straight to running with the Jetson rail raised - a unit apparently
+     * powering itself on. A brown-out is a cold start, so treat it as one.
+     * Pressing the power button appears to dip the rail on this hardware
+     * (it switches the regulator's input), which makes this reachable. */
+    bool warmBoot = ((RCONbits.POR == 0) && (RCONbits.BOR == 0));
+
+    /* TEMPORARY DIAGNOSTIC - remove with bytes 17-19. The reset-cause register
+     * as found, before anything below clears a bit of it. Low byte at 20:
+     * bit0 POR, bit1 BOR, bit2 IDLE, bit3 SLEEP, bit4 WDTO, bit5 SWDTEN,
+     * bit6 SWR, bit7 EXTR. High byte at 21 carries TRAPR and IOPUWR. */
+    EMULATE_EEPROM_Memory[20] = (uint8_t)(RCON & 0xFF);
+    EMULATE_EEPROM_Memory[21] = (uint8_t)(RCON >> 8);
     
 //#define  quickhacktest
     
@@ -237,18 +268,87 @@ int main(void)
      *
      * Safety: HOLD_PWR is only released when the charger DEFINITELY reads
      * present (RA7 == 0). Any other reading falls through to run-and-stay-
-     * latched, so a misread can never strand a battery boot dead. */
+     * latched, so a misread can never strand a battery boot dead.
+     *
+     * HOW THE TWO ARE TOLD APART, and why it is not a single read of RA7:
+     *
+     * The BUTTON is asked first. On battery the press is what powers the rail,
+     * and it outlasts startup, so the button is still down when we get here -
+     * measured on the bench. Nobody is touching it on a charger start. That
+     * reading is available immediately and needs no settling.
+     *
+     * Only when the button is NOT held do we look at /ACOK, and then we WAIT
+     * for it: on a charger-powered start the PIC is running before the charger
+     * IC has asserted its AC-present output, so the old single sample here read
+     * "no charger" while a read moments later read "charger present" - which
+     * sent a charger boot down the battery path and left it latched on when the
+     * charger was pulled out. AcokWaitPresent() polls for a stable low instead.
+     *
+     * Waiting costs nothing on a button start, because that case never reaches
+     * it. */
     if (!warmBoot)
     {
            
         
-        if (DEBUG_IN_GetValue() == 0)      /* /ACOK low -> charger present */
+        /* ---- TEMPORARY DIAGNOSTIC - remove once the charger-boot question is
+         * settled -----------------------------------------------------------
+         * Snapshot the two inputs this branch turns on, BEFORE anything acts
+         * on them. Address 17 is unused: the low read-only block ends at 16
+         * and the high block descends to 109, so nothing in the map moves.
+         *
+         *   bit 0: /ACOK  (RA7)   0 = charger present
+         *   bit 1: button (RB10)  0 = pressed
+         *   bit 2: warmBoot
+         *
+         * Read it from the Jetson with peek.py. */
+        EMULATE_EEPROM_Memory[17] = (uint8_t)
+                ((DEBUG_IN_GetValue()     ? 0x01 : 0x00) |
+                 (POWER_BUTTON_GetValue() ? 0x02 : 0x00) |
+                 (warmBoot                ? 0x04 : 0x00));
+
+        /* "not measured" sentinel, so a real 0 in byte 19 can only mean /ACOK
+         * was already low - it read 0 once simply because the button-held path
+         * never calls AcokWaitPresent() and the array starts zeroed. */
+        EMULATE_EEPROM_Memory[19] = 0xFE;
+
+        /* Button held -> the user powered this on, and no amount of waiting
+         * for /ACOK changes that. Otherwise something else brought the rail
+         * up, so give the charger line time to say whether it was the
+         * charger. */
+        bool chargerBoot;
+
+        if (ButtonStable(true, BUTTON_SETTLE_MS))
+            chargerBoot = false;
+        else
+            chargerBoot = AcokWaitPresent(ACOK_TIMEOUT_MS);
+
+        if (chargerBoot)                   /* /ACOK low -> charger present */
         {
-         
+            uint8_t diagflash;
+
             charged = 0;
             HOLD_PWR_SetLow();             /* charger holds the rail; unplug-while-idle -> off */
-        }
-            while(POWER_BUTTON_GetValue()) /* wait for a button press to power on */
+
+            /* TEMPORARY: two slow GREEN flashes = charger branch taken. Shown
+             * with the Jetson still down, unlike the byte above. */
+            for (diagflash = 0; diagflash < 2; diagflash++)
+            {
+                BI_LED_RED_SetLow();
+                BI_LED_GREEN_SetHigh();
+                __delay_ms(250);
+                ClrWdt();
+                BI_LED_GREEN_SetLow();
+                __delay_ms(250);
+                ClrWdt();
+            }
+
+            /* Charge display, until a real press asks us to power on. This
+             * whole wait belongs to the charger case ONLY: on battery there
+             * is nobody to wait for - the press that powers the rail IS the
+             * power-on. It used to sit outside this branch, so a battery
+             * boot waited here for a second press that the user had no reason
+             * to make, with HOLD_PWR latched and the pack draining. */
+            while(!ButtonStable(true, BUTTON_SETTLE_MS))
             {
                 ClrWdt();
                 if(!charged)
@@ -277,9 +377,41 @@ int main(void)
             HOLD_PWR_SetHigh();
             while(!PowerButton(On))//wait for a 'power on' press and hold to complete
                 ClrWdt();
-        
-        /* else: no charger -> battery button-boot -> HOLD_PWR already high,
-         * fall straight through to running. Single press. */
+        }
+        else
+        {
+            /* No charger. The 3V3 rail can only have come up because the user
+             * is holding the button, so THIS press is the power-on and no
+             * second press is asked for. HOLD_PWR was latched high above (and
+             * by the bootloader before that), so the unit stays up on release.
+             *
+             * The Jetson rail has to be raised here: it was dropped above for
+             * the cold path, and PowerButton(On) - the only other place that
+             * raises it - is on the charger branch.
+             *
+             * Then wait for a DEBOUNCED release before running. The main loop
+             * reads a held button as a power-DOWN request and PowerButton(Off)
+             * qualifies after ~330 ms, so entering the loop with this press
+             * still held would shut the unit straight back down. */
+            uint8_t diagflash;
+
+            /* TEMPORARY: two slow RED flashes = battery branch taken, i.e.
+             * /ACOK read HIGH. Seeing this with the charger plugged in is the
+             * misread we are hunting. */
+            for (diagflash = 0; diagflash < 2; diagflash++)
+            {
+                BI_LED_GREEN_SetLow();
+                BI_LED_RED_SetHigh();
+                __delay_ms(250);
+                ClrWdt();
+                BI_LED_RED_SetLow();
+                __delay_ms(250);
+                ClrWdt();
+            }
+
+            JETSON_5V_ON_SetHigh();
+            ButtonWaitReleased();
+        }
     }
     /* Both paths are now "powered and running": show green. */
     BI_LED_GREEN_SetHigh();//Turn on Green LED
@@ -391,7 +523,27 @@ int main(void)
     while(1)
     {   
       
-       if(!POWER_BUTTON_GetValue())
+       /* ---- TEMPORARY DIAGNOSTIC - remove along with the byte at 17 -------
+        * LIVE pin sample, refreshed every pass, so the charger line can be
+        * watched with "peek.py 17 2" while the charger is plugged in and
+        * pulled out. 17 is the once-only snapshot taken at the branch; 18 is
+        * what the pins read right now.
+        *
+        *   bit 0: /ACOK    (RA7)   0 = charger present
+        *   bit 1: button   (RB10)  0 = pressed
+        *   bit 2: HOLD_PWR (RA10)  1 = our own supply latched on
+        *   bit 7: always set when written, so a reading of 0x00 means the main
+        *          loop has NOT run this boot rather than "all three low"
+        */
+       EMULATE_EEPROM_Memory[18] = (uint8_t)(0x80 |
+               ((DEBUG_IN_GetValue()     ? 0x01 : 0x00) |
+                (POWER_BUTTON_GetValue() ? 0x02 : 0x00) |
+                (HOLD_PWR_GetValue()     ? 0x04 : 0x00)));
+
+       /* Debounced, so a glitch on the line cannot start a power-down and
+        * blank the LEDs on its way through PowerButton(). Costs one sample
+        * per loop while the button is idle. */
+       if(ButtonStable(true, BUTTON_SETTLE_MS))
          PowerDown(ButtonPwrDwn);
 
         if(DoTask) //this is set periodically by the TMR2 interrupt. Nominally 1 second.
@@ -729,6 +881,88 @@ void PowerDown(bool ForcePowerDown)
 }
 
 
+/* Debounced read of the power button.
+ *
+ * Returns true only when the button has read `pressed` continuously for
+ * settle_ms, and false the moment a sample disagrees - so a caller can poll
+ * it cheaply: asking "is it pressed?" of an idle button costs one sample and
+ * returns immediately.
+ *
+ * POWER_BUTTON is active LOW, with the internal pull-up enabled on CN16, so
+ * "pressed" is a LOW reading. Sampling every few milliseconds and restarting
+ * the count on any disagreeing sample outlasts the 1-10 ms of contact bounce,
+ * and means a bounce gap part-way through a press is not read as a release.
+ */
+static bool ButtonStable(bool pressed, uint16_t settle_ms)
+{
+    uint16_t waited;
+
+    for (waited = 0; waited < settle_ms; waited += BUTTON_SAMPLE_MS)
+    {
+        if (((POWER_BUTTON_GetValue() == 0) ? true : false) != pressed)
+            return false;
+        __delay_ms(BUTTON_SAMPLE_MS);
+        ClrWdt();
+    }
+    return (((POWER_BUTTON_GetValue() == 0) ? true : false) == pressed);
+}
+
+/* Wait for /ACOK to say the charger is present, rather than sampling it once.
+ *
+ * RA7 is the charger IC's open-collector AC-present output, pulled up to the
+ * PIC's own 3V3. On a charger-powered start the PIC is up and running before
+ * that output has asserted: measured on the bench, this branch read "no
+ * charger" while a read moments later read "charger present" - so one early
+ * sample committed the whole session to the wrong path.
+ *
+ * Polls for a low that holds for ACOK_SETTLE_MS, returning true as soon as one
+ * is seen and false if the line stays high for the whole timeout. Called only
+ * when the button is not held, so a button power-on never waits.
+ *
+ * The TEMPORARY write to byte 19 records how long it took, in 10 ms units
+ * (0xFF = never asserted), so ACOK_TIMEOUT_MS can be chosen from measurements.
+ * Remove it with the rest of the diagnostics.
+ */
+static bool AcokWaitPresent(uint16_t timeout_ms)
+{
+    uint16_t waited;
+    uint8_t  low_run = 0;                  /* consecutive low samples */
+
+    for (waited = 0; waited < timeout_ms; waited += ACOK_SAMPLE_MS)
+    {
+        if (DEBUG_IN_GetValue() == 0)
+        {
+            low_run++;
+            if (low_run >= (ACOK_SETTLE_MS / ACOK_SAMPLE_MS))
+            {
+                uint16_t tens = (uint16_t)(waited / 10u);
+                EMULATE_EEPROM_Memory[19] = (uint8_t)((tens > 254u) ? 254u : tens);
+                return true;
+            }
+        }
+        else
+        {
+            low_run = 0;                   /* must be CONTINUOUSLY low */
+        }
+        __delay_ms(ACOK_SAMPLE_MS);
+        ClrWdt();
+    }
+
+    EMULATE_EEPROM_Memory[19] = 0xFF;      /* never asserted within the timeout */
+    return false;
+}
+
+/* Block until the button has been released and stayed released. Used wherever
+ * one press must not be seen twice by the code that follows. */
+static void ButtonWaitReleased(void)
+{
+    while (!ButtonStable(false, BUTTON_RELEASE_MS))
+    {
+        __delay_ms(BUTTON_SAMPLE_MS);
+        ClrWdt();
+    }
+}
+
 //returns 1 if Power button held long enough
 // or 0 if not....
 uint8_t PowerButton (bool OnOff)
@@ -738,7 +972,10 @@ uint8_t PowerButton (bool OnOff)
     bool ButtonPassed;
     ButtonPassed=0;
     
-    while(!POWER_BUTTON_GetValue())
+    /* Count for as long as the button is held. Tested with the debounced read
+     * so that a bounce gap mid-press is not taken for a release - which used
+     * to abort the count and report "released too soon" on a genuine hold. */
+    while(!ButtonStable(false, BUTTON_SETTLE_MS))
     {
         ButtonPressHold++;
 
@@ -796,22 +1033,10 @@ uint8_t PowerButton (bool OnOff)
     }
 
     /* Only after a qualifying hold: wait for release so the caller does not
-     * see the same press a second time. */
-    __delay_ms(50);
-    while(!POWER_BUTTON_GetValue())
-    {
-        ClrWdt();
-       __delay_ms(50);
-    }
+     * see the same press a second time. Replaces two hand-rolled wait loops
+     * that each exited on a single high sample. */
+    ButtonWaitReleased();
 
-    __delay_ms(50);
-
-     while(!POWER_BUTTON_GetValue())
-    {
-         ClrWdt();
-         __delay_ms(50);    
-    }
-    
     return(ButtonPassed);
          
 }
@@ -884,9 +1109,14 @@ uint8_t GetBattVolts(void) //TODO: extend to check charge ,and determine if crit
 static uint8_t VoltageThresholdNow;  // thus indicates which one to test against  */
     uint8_t raw[2];
     uint16_t voltagemv;
-    uint16_t warning;
+    /* STATIC, and initialised. The flags are cleared and set across calls -
+     * see the BatteryPackCommsFailure clear just below - which only works if
+     * the value survives from one call to the next. As a plain local it was
+     * whatever the stack happened to hold, so a garbage bit 0 read as
+     * PowerOff_1_min and HandleTaskWarning() ran AllPowerDown() within
+     * seconds of every boot. */
+    static uint16_t warning = 0;
     uint8_t FuelGuagePercent;
-    //warning=0;
     BI_LED_GREEN_SetLow();//Turn off Green LED
     BI_LED_RED_SetHigh();//Turn on Red LED
     ClrWdt();
@@ -912,13 +1142,16 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
             return(warning);
         }
     }
-    else  // if it fails to read, then don't update the record
-    {
-        EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr]     = raw[0];  /* LSB */
-        EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr + 1] = raw[1];  /* MSB */
-        voltagemv= MAP_UnpackInt16(raw);
-        
-    }
+
+    /* Reached only when a read SUCCEEDED - first time, or on the retry after
+     * an unwedge. This used to be an else on the outer if, which meant a
+     * first read that failed and then RETRIED SUCCESSFULLY skipped the store
+     * entirely: the published voltage stayed stale and voltagemv kept
+     * whatever was on the stack, which the thresholds below then judged - and
+     * a low enough garbage value walks the unit to a false power-off. */
+    EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr]     = raw[0];  /* LSB */
+    EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr + 1] = raw[1];  /* MSB */
+    voltagemv = MAP_UnpackInt16(raw);
 
     if (voltagemv<(VoltageThresholds[VoltageThresholdNow]))  //12v is a nominal, test figure, 3V per cell
     {
@@ -971,13 +1204,12 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
             return(warning);
         }
     }
-    else  // if it fails to read, then don't update the record
-    {
-        EMULATE_EEPROM_Memory[BatteryChargeState_Addr]     = raw[0];  /* LSB */
-      
-        FuelGuagePercent= raw[0];
-        
-    }
+
+    /* Same as the voltage read above: reached only when a read succeeded, by
+     * either route, so a successful retry is no longer thrown away. */
+    EMULATE_EEPROM_Memory[BatteryChargeState_Addr] = raw[0];  /* percent */
+
+    FuelGuagePercent = raw[0];
 //#define CheckFuelGuage    
 #ifdef CheckFuelGuage
     if (FuelGaugPercent<(ChargeThresholds[VoltageThresholdNow]))  //12v is a nominal, test figure, 3V per cell

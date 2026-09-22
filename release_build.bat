@@ -4,10 +4,18 @@ REM release_build.bat  -  clean-build all three projects and publish the hexes
 REM
 REM   release_build.bat
 REM
+REM Two output trees:
+REM
+REM   DEVELOPMENT  C:\RGS_SubSystemDevelopment  - EVERYTHING goes here: the
+REM                archive of every build, the EEPROM map, the current images.
+REM   RELEASE      C:\SubSystemFirmware          - ONLY the two images a board
+REM                is actually programmed with, plus the EEPROM map the
+REM                Jetson-side tools import (step 7).
+REM
 REM Does the lot, in order:
 REM
-REM   0. Publishes the shared EEPROM map from CommonFiles\header to
-REM      C:\SubSystemFirmware: EEpromBlockLabels.h copied as-is, and
+REM   0. Publishes the shared EEPROM map from CommonFiles\header to the
+REM      development tree: EEpromBlockLabels.h copied as-is, and
 REM      EEpromBlockLabels_h_InPython.py GENERATED from it by
 REM      eeprom_header_to_python.py (needs Python 3.6+ on PATH)
 REM   1. Bootloader_V2      default              -> ...\Bootloader
@@ -16,11 +24,16 @@ REM                                                 ...\BringUp\Default
 REM   3. PuttingGate        standalone + default -> ...\PuttingGate\Standalone
 REM                                                 ...\PuttingGate\Default
 REM   4. Combined bootloader + BringUp default   -> ...\BringUp\Combined
-REM   5. Empties C:\SubSystemFirmware\BringUp_FirstRun and puts that same
+REM      (1-4 all under the development tree's PreviousReleasedHexFiles)
+REM   5. Empties the development tree's BringUp and puts that same
 REM      combined image there - the one file a virgin board gets programmed
 REM      with, so the folder must never offer a choice
-REM   6. Empties C:\SubSystemFirmware\Production and puts the fresh
+REM   6. Empties the development tree's Production and puts the fresh
 REM      PuttingGate DEFAULT build there
+REM   7. Copies the images from 5 and 6 into the SAME sub-folders of the
+REM      release tree, then deletes every other file in each, so each release
+REM      folder is left holding exactly one image. Also copies the two EEPROM
+REM      map files from step 0 to the release tree's root.
 REM
 REM Naming: <Project>_<CFG>_<maj>_<min>.hex, CFG = SA (standalone) or DF
 REM (default), version read from each project's firmware_version.h. The
@@ -28,7 +41,7 @@ REM combined image is RGS_Boot_Bring_Uni_<boot ver>__<bringup ver>.hex, in
 REM that order.
 REM
 REM Deliberately a separate script rather than a post-build step: building in
-REM MPLAB must NOT touch C:\SubSystemFirmware. Publishing is a manual act.
+REM MPLAB must NOT touch either output tree. Publishing is a manual act.
 REM
 REM Builds are CLEAN builds driven by MPLAB's own make, so the generated
 REM makefiles are regenerated from configurations.xml first - that is what
@@ -40,10 +53,10 @@ REM number is the most recent previous copy. That matters because these folders
 REM are an archive: rebuilding without bumping firmware_version.h would
 REM otherwise silently replace a released image with a different binary
 REM carrying the same version number.
-REM   (Exceptions: C:\SubSystemFirmware\Production and BringUp_FirstRun are
-REM    emptied outright, by design - each holds exactly one image and history
-REM    lives in the archive. The two EEPROM map files from step 0 are simply
-REM    overwritten; git keeps their history.)
+REM   (Exceptions: the Production and BringUp folders, in BOTH trees,
+REM    are cleared rather than archived, by design - each holds exactly one
+REM    image and history lives in the archive. The two EEPROM map files from
+REM    step 0 are simply overwritten; git keeps their history.)
 REM
 REM Compiler warnings are counted and listed for every build. A build FAILURE
 REM aborts the whole script, so a bad build can never reach Production.
@@ -56,10 +69,13 @@ set "ROOT=%~dp0"
 set "MPLABBIN=C:\Program Files\Microchip\MPLABX\v6.25\mplab_platform\bin"
 set "MAKEBIN=C:\Program Files\Microchip\MPLABX\v6.25\gnuBins\GnuWin32\bin"
 set "HEXMATE=C:\Program Files\Microchip\MPLABX\v6.25\mplab_platform\bin\hexmate.exe"
-set "DEST=C:\SubSystemFirmware\PreviousReleasedHexFiles"
-set "PROD=C:\SubSystemFirmware\Production"
-set "FIRSTRUN=C:\SubSystemFirmware\BringUp_FirstRun"
+REM The two output trees - see the top of this file.
+set "DEV=C:\RGS_SubSystemDevelopment"
 set "SUBSYS=C:\SubSystemFirmware"
+
+set "DEST=%DEV%\PreviousReleasedHexFiles"
+set "PROD=%DEV%\Production"
+set "FIRSTRUN=%DEV%\BringUp"
 set "MAPH=%ROOT%CommonFiles\header\EEpromBlockLabels.h"
 set "MAPCONV=%ROOT%eeprom_header_to_python.py"
 
@@ -67,6 +83,12 @@ if not exist "%MAKEBIN%\make.exe" ( echo ERROR: make.exe not found in "%MAKEBIN%
 if not exist "%HEXMATE%"          ( echo ERROR: hexmate not found: "%HEXMATE%"    & exit /b 1 )
 if not exist "%MPLABBIN%\prjMakefilesGenerator.bat" ( echo ERROR: prjMakefilesGenerator not found & exit /b 1 )
 if not exist "%MAPCONV%"          ( echo ERROR: converter not found: "%MAPCONV%"  & exit /b 1 )
+
+REM Both trees must already exist. Sub-folders are created as needed, but a
+REM missing ROOT means a mistyped path or a repo not yet cloned - and mkdir
+REM would otherwise quietly build a stray tree nobody is looking at.
+if not exist "%DEV%\"             ( echo ERROR: development tree not found: "%DEV%" & exit /b 1 )
+if not exist "%SUBSYS%\"          ( echo ERROR: release tree not found: "%SUBSYS%"  & exit /b 1 )
 
 REM Python runs the EEPROM map converter (step 0). Checked by RUNNING it, not
 REM with "where": Windows ships a python.exe stub that only opens the Store.
@@ -105,14 +127,14 @@ REM
 REM Both files are overwritten, not archived: scripts import the .py by that
 REM name from that folder, so _prevN copies would only clutter it, and git
 REM keeps the history.
-echo [0] publishing EEPROM map to %SUBSYS%
+echo [0] publishing EEPROM map to %DEV%
 if not exist "%MAPH%" ( echo     ERROR: %MAPH% not found & exit /b 1 )
-python "%MAPCONV%" "%MAPH%" "%SUBSYS%\EEpromBlockLabels_h_InPython.py" >nul
+python "%MAPCONV%" "%MAPH%" "%DEV%\EEpromBlockLabels_h_InPython.py" >nul
 if errorlevel 1 ( echo     ERROR: EEpromBlockLabels.h did not convert - see above & exit /b 1 )
-copy /Y "%MAPH%" "%SUBSYS%\EEpromBlockLabels.h" >nul
+copy /Y "%MAPH%" "%DEV%\EEpromBlockLabels.h" >nul
 if errorlevel 1 ( echo     ERROR: copy of EEpromBlockLabels.h failed & exit /b 1 )
-echo     -^> %SUBSYS%\EEpromBlockLabels_h_InPython.py
-echo     -^> %SUBSYS%\EEpromBlockLabels.h
+echo     -^> %DEV%\EEpromBlockLabels_h_InPython.py
+echo     -^> %DEV%\EEpromBlockLabels.h
 echo.
 
 REM ---- 1. Bootloader, default ------------------------------------------------
@@ -148,7 +170,7 @@ if errorlevel 1 ( echo     ERROR: hexmate failed & exit /b 1 )
 echo     -^> %DEST%\BringUp\Combined\%COMBINED%
 echo.
 
-REM ---- 5. refresh the BringUp_FirstRun folder --------------------------------
+REM ---- 5. refresh the BringUp folder -----------------------------------------
 REM The same combined image as step 4, but as the ONE file a virgin board gets
 REM programmed with. Emptied first for the same reason as Production below: a
 REM folder that is meant to answer "which image?" must not offer a choice.
@@ -159,7 +181,7 @@ echo [5] refreshing %FIRSTRUN%
 if not exist "%FIRSTRUN%" mkdir "%FIRSTRUN%"
 del /Q "%FIRSTRUN%\*" 2>nul
 copy /Y "%DEST%\BringUp\Combined\%COMBINED%" "%FIRSTRUN%\%COMBINED%" >nul
-if errorlevel 1 ( echo     ERROR: copy to BringUp_FirstRun failed & exit /b 1 )
+if errorlevel 1 ( echo     ERROR: copy to BringUp failed & exit /b 1 )
 echo     -^> %FIRSTRUN%\%COMBINED%
 echo.
 
@@ -175,11 +197,42 @@ if errorlevel 1 ( echo     ERROR: copy to Production failed & exit /b 1 )
 echo     -^> %PROD%\%PGNAME%
 echo.
 
+REM ---- 7. publish the release subset ----------------------------------------
+REM The release tree gets ONLY the two images a board is actually programmed
+REM with - the same files steps 5 and 6 just placed in the development tree -
+REM into the same sub-folders, plus the EEPROM map. The archive and everything
+REM else stay in the development tree.
+REM
+REM Each image is copied FIRST, and only then is every other file in that folder
+REM deleted. The other way round, a failed copy would leave the folder empty;
+REM this way a failure leaves the previous image in place and the script stops.
+REM
+REM The map files are copied from the DEVELOPMENT tree, where step 0 generated
+REM and import-tested them, and only here at the end - so the release tree's
+REM map changes only alongside a release whose builds all succeeded, never on
+REM its own. Overwritten, not archived: tools import them by name from the
+REM tree's root, and git keeps the history.
+echo [7] publishing release images and EEPROM map to %SUBSYS%
+call :publishonly "%FIRSTRUN%\%COMBINED%" "%SUBSYS%\BringUp" || exit /b 1
+call :publishonly "%PROD%\%PGNAME%"       "%SUBSYS%\Production"       || exit /b 1
+REM Written out rather than looped: an "exit /b 1" inside a FOR block did not
+REM reliably carry the failure out of the script (tested - it printed the error
+REM and exited 0). Top-level checks, as everywhere else in this file, do.
+copy /Y "%DEV%\EEpromBlockLabels.h" "%SUBSYS%\EEpromBlockLabels.h" >nul
+if errorlevel 1 ( echo     ERROR: copy of EEpromBlockLabels.h to %SUBSYS% failed & exit /b 1 )
+echo     -^> %SUBSYS%\EEpromBlockLabels.h
+copy /Y "%DEV%\EEpromBlockLabels_h_InPython.py" "%SUBSYS%\EEpromBlockLabels_h_InPython.py" >nul
+if errorlevel 1 ( echo     ERROR: copy of EEpromBlockLabels_h_InPython.py to %SUBSYS% failed & exit /b 1 )
+echo     -^> %SUBSYS%\EEpromBlockLabels_h_InPython.py
+echo.
+
 echo ============================================================
 echo  Release build complete.
 echo    bootloader v%BOOTVER:_=.%   BringUp v%BRINGVER:_=.%   PuttingGate v%PGVER:_=.%
-echo    BringUp_FirstRun now holds %COMBINED%
+echo    BringUp          now holds %COMBINED%
 echo    Production       now holds %PGNAME%
+echo    - in both %DEV%
+echo      and     %SUBSYS%
 echo ============================================================
 endlocal
 exit /b 0
@@ -305,4 +358,26 @@ call :archive "%~6\%_OUT%" || exit /b 1
 copy /Y "%_SRC%" "%~6\%_OUT%" >nul
 if errorlevel 1 ( echo     ERROR: copy to "%~6" failed & exit /b 1 )
 echo     -^> %~6\%_OUT%
+exit /b 0
+
+REM ===========================================================================
+REM :publishonly  <source file>  <destination folder>
+REM Copy one file into a folder, THEN delete every other file there, so the
+REM folder ends up holding that file alone. Copying first means a failed copy
+REM leaves the previous file in place rather than an empty folder.
+REM Files only: sub-folders, and hidden or system files, are left alone.
+REM ===========================================================================
+:publishonly
+set "_PO=%~nx1"
+if not exist "%~1" ( echo     ERROR: "%~1" not found & exit /b 1 )
+if not exist "%~2" mkdir "%~2"
+copy /Y "%~1" "%~2\%_PO%" >nul
+if errorlevel 1 ( echo     ERROR: copy to "%~2" failed & exit /b 1 )
+for %%F in ("%~2\*") do (
+    if /I not "%%~nxF"=="!_PO!" (
+        del /Q "%%~fF"
+        echo     removed %%~nxF
+    )
+)
+echo     -^> %~2\%_PO%
 exit /b 0
