@@ -35,9 +35,17 @@
 #define BOOT_DEMO_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 void BOOT_DEMO_Initialize(void);
 void BOOT_DEMO_Tasks(void);
+
+/* RGS: true once the bootloader has decided to STAY rather than hand over. */
+bool BOOT_DEMO_InBootloadMode(void);
+
+/* RGS: true when it stayed because there is no valid application - as opposed
+ * to the host asking for a flash with JETSON_CALLING. Drives the LEDs. */
+bool BOOT_DEMO_NoValidImage(void);
 
 /* ---- Clean-handoff support ------------------------------------------------
  * Instead of calling the application directly from a warm, half-configured

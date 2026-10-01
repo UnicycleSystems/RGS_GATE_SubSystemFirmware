@@ -31,9 +31,10 @@ REM      with, so the folder must never offer a choice
 REM   6. Empties the development tree's Production and puts the fresh
 REM      PuttingGate DEFAULT build there
 REM   7. Copies the images from 5 and 6 into the SAME sub-folders of the
-REM      release tree, then deletes every other file in each, so each release
-REM      folder is left holding exactly one image. Also copies the two EEPROM
-REM      map files from step 0 to the release tree's root.
+REM      release tree, plus the PuttingGate STANDALONE build into its
+REM      PicTestCode folder, then deletes every other file in each, so each
+REM      release folder is left holding exactly one image. Also copies the two
+REM      EEPROM map files from step 0 to the release tree's root.
 REM
 REM Naming: <Project>_<CFG>_<maj>_<min>.hex, CFG = SA (standalone) or DF
 REM (default), version read from each project's firmware_version.h. The
@@ -198,10 +199,15 @@ echo     -^> %PROD%\%PGNAME%
 echo.
 
 REM ---- 7. publish the release subset ----------------------------------------
-REM The release tree gets ONLY the two images a board is actually programmed
-REM with - the same files steps 5 and 6 just placed in the development tree -
-REM into the same sub-folders, plus the EEPROM map. The archive and everything
-REM else stay in the development tree.
+REM The release tree gets ONLY the images a board is actually programmed with,
+REM plus the EEPROM map. The archive and everything else stay in the
+REM development tree.
+REM
+REM NOTE the deliberate difference from the development tree: there, BringUp
+REM holds the COMBINED bootloader+jig image for programming a virgin board over
+REM ICSP (step 5). Here it holds the jig application ALONE, because the release
+REM tree's job is flashing over a bootloader that is already on the part - and
+REM Bootloader/ holds that bootloader, for putting it there in the first place.
 REM
 REM Each image is copied FIRST, and only then is every other file in that folder
 REM deleted. The other way round, a failed copy would leave the folder empty;
@@ -212,9 +218,19 @@ REM and import-tested them, and only here at the end - so the release tree's
 REM map changes only alongside a release whose builds all succeeded, never on
 REM its own. Overwritten, not archived: tools import them by name from the
 REM tree's root, and git keeps the history.
+REM PicTestCode carries the PuttingGate STANDALONE build - the ICSP/debugger
+REM image, with its own config words - for bench work on a bare PIC. Same
+REM one-file rule as the folders above, and taken from the copy step 3 just
+REM published so it is the same bytes as the archived release.
+set "PGSANAME=RGS_PuttingGate_SA_%PGVER%.hex"
+set "BUDFNAME=RGS_BringUp_DF_%BRINGVER%.hex"
+set "BLDFNAME=Bootloader_V2_DF_%BOOTVER%.hex"
+
 echo [7] publishing release images and EEPROM map to %SUBSYS%
-call :publishonly "%FIRSTRUN%\%COMBINED%" "%SUBSYS%\BringUp" || exit /b 1
+call :publishonly "%DEST%\Bootloader\%BLDFNAME%"      "%SUBSYS%\Bootloader" || exit /b 1
+call :publishonly "%DEST%\BringUp\Default\%BUDFNAME%" "%SUBSYS%\BringUp"    || exit /b 1
 call :publishonly "%PROD%\%PGNAME%"       "%SUBSYS%\Production"       || exit /b 1
+call :publishonly "%DEST%\PuttingGate\Standalone\%PGSANAME%" "%SUBSYS%\PicTestCode" || exit /b 1
 REM Written out rather than looped: an "exit /b 1" inside a FOR block did not
 REM reliably carry the failure out of the script (tested - it printed the error
 REM and exited 0). Top-level checks, as everywhere else in this file, do.
@@ -229,10 +245,16 @@ echo.
 echo ============================================================
 echo  Release build complete.
 echo    bootloader v%BOOTVER:_=.%   BringUp v%BRINGVER:_=.%   PuttingGate v%PGVER:_=.%
-echo    BringUp          now holds %COMBINED%
-echo    Production       now holds %PGNAME%
-echo    - in both %DEV%
-echo      and     %SUBSYS%
+echo.
+echo    %DEV%
+echo      BringUp       %COMBINED%
+echo      Production    %PGNAME%
+echo.
+echo    %SUBSYS%
+echo      Bootloader    %BLDFNAME%
+echo      BringUp       %BUDFNAME%
+echo      Production    %PGNAME%
+echo      PicTestCode   %PGSANAME%
 echo ============================================================
 endlocal
 exit /b 0

@@ -55,7 +55,10 @@ typedef enum NVM_RETURN_STATUS {
     NVM_INVALID_ADDRESS,
     NVM_WRITE_ERROR,
     NVM_READ_ERROR,
-}NVM_RETURN_STATUS; 
+    /* RGS: refused because the charger is not present. Appended, so the
+     * existing values keep their numbers. */
+    NVM_NO_CHARGER,
+}NVM_RETURN_STATUS;
 
 
 bool IsLegalRange(uint32_t startRangeToCheck, uint32_t endRangeToCheck);

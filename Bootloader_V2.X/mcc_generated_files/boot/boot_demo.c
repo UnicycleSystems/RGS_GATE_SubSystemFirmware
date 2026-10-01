@@ -54,6 +54,7 @@
 static bool inBootloadMode = false;
 static bool executionImageRequiresValidation = true;
 static bool executionImageValid = false;
+static bool bootloadRequested = false;   /* RGS: stayed because JETSON_CALLING asked */
 
 /* Clean-handoff flag (see boot_demo.h). Written here just before the
  * handoff reset; consumed (or zeroed) by main() at the top of every boot.
@@ -76,6 +77,7 @@ void BOOT_DEMO_Tasks(void)
         if( EnterBootloadMode() == true )
         {
             inBootloadMode = true;
+            bootloadRequested = true;
         }
         else
         {
@@ -117,14 +119,22 @@ void BOOT_DEMO_Tasks(void)
             }
         }
 
-        if(inBootloadMode == true)
-        {
-            BI_LED_RED_SetHigh();
-            BI_LED_GREEN_SetLow();
-        }
+        /* RGS: the LEDs for bootload mode are driven by main()'s LED service,
+         * which also distinguishes "waiting for a flash" from "no valid image"
+         * and "programming". It used to set a steady red here for all three. */
     }
 
     (void)BOOT_ProcessCommand();
+}
+
+bool BOOT_DEMO_InBootloadMode(void)
+{
+    return inBootloadMode;
+}
+
+bool BOOT_DEMO_NoValidImage(void)
+{
+    return (inBootloadMode && !bootloadRequested);
 }
 
 static bool EnterBootloadMode(void)

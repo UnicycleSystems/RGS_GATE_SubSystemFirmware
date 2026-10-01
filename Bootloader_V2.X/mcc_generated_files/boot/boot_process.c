@@ -62,6 +62,12 @@ static uint8_t commandArray[BOOT_CONFIG_MAX_PACKET_SIZE];
  * application's cold-start detection forever. */
 static bool sessionProgrammed = false;
 
+/* RGS: see boot_process.h. Set on every successful erase or write. */
+volatile uint8_t boot_programming_activity = 0;
+
+/* RGS: see boot_process.h. Set when a programmed session verifies. */
+volatile uint8_t boot_launch_after_verify = 0;
+
 enum BOOT_COMMAND_RESPONSES
 {
     COMMAND_SUCCESS = 0x01,
@@ -299,10 +305,34 @@ static enum BOOT_COMMAND_RESULT EraseFlash(void)
     }
     else
 #endif
-    if ( BOOT_BlockErase(pCommand->address, pCommand->dataLength, pCommand->unlockSequence) == NVM_SUCCESS)
     {
-        response.success = COMMAND_SUCCESS;
-        sessionProgrammed = true;   /* flash modified: post-session reset reads warm */
+        /* BOOT_BlockErase() checks the charger again itself, before it unlocks
+         * flash AND before each page, so losing the charger part way through
+         * stops the erase instead of completing it. Report that distinctly. */
+        NVM_RETURN_STATUS eraseStatus =
+                BOOT_BlockErase(pCommand->address, pCommand->dataLength,
+                                pCommand->unlockSequence);
+
+        if (eraseStatus == NVM_SUCCESS)
+        {
+            response.success = COMMAND_SUCCESS;
+
+            /* Only claim the session changed flash if a page was actually
+             * erased. A ZERO-page erase is how the host asks "would you let me
+             * erase?" - the charger probe - and it must leave no trace: it used
+             * to set these, so a refused session still cleared POR/BOR in
+             * ResetDevice() and the application then started as a WARM boot,
+             * having been told an update happened when none had. */
+            if (pCommand->dataLength > 0u)
+            {
+                sessionProgrammed = true;   /* flash modified: post-session reset reads warm */
+                boot_programming_activity = 1;
+            }
+        }
+        else if (eraseStatus == NVM_NO_CHARGER)
+        {
+            response.success = NO_CHARGER;
+        }
     }
     
     BOOT_COM_Write((uint8_t*) & response, sizeof (struct RESPONSE_TYPE_0) / sizeof (uint8_t));
@@ -349,13 +379,28 @@ static enum BOOT_COMMAND_RESULT WriteFlash(void)
 #endif
     if (dataLength <= (BOOT_CONFIG_MAX_PACKET_SIZE - sizeof(struct CMD_STRUCT_0)))
     {
-        if (BOOT_BlockWrite(pCommand->address, dataLength, &pCommand->data[0], pCommand->unlockSequence) != NVM_SUCCESS)
+        /* As with erase: BOOT_BlockWrite() checks the charger itself, before
+         * unlocking flash and before each block within the packet. */
+        NVM_RETURN_STATUS writeStatus =
+                BOOT_BlockWrite(pCommand->address, dataLength,
+                                &pCommand->data[0], pCommand->unlockSequence);
+
+        if (writeStatus == NVM_SUCCESS)
         {
-            response.success = BAD_ADDRESS;
+            /* Same rule as erase: an empty write changed nothing. */
+            if (dataLength > 0u)
+            {
+                sessionProgrammed = true;   /* flash modified: post-session reset reads warm */
+                boot_programming_activity = 1;
+            }
+        }
+        else if (writeStatus == NVM_NO_CHARGER)
+        {
+            response.success = NO_CHARGER;
         }
         else
         {
-            sessionProgrammed = true;   /* flash modified: post-session reset reads warm */
+            response.success = BAD_ADDRESS;
         }
     }
     else
@@ -467,6 +512,15 @@ static enum BOOT_COMMAND_RESULT SelfVerify(void)
     else
     {
         response.success = COMMAND_SUCCESS;
+
+        /* RGS: an update that is complete AND verified - so this bootloader
+         * launches it itself once the host releases JETSON_CALLING, instead of
+         * depending on a RESET_DEVICE that may never come. sessionProgrammed
+         * keeps a bare verify, with nothing written, from triggering it. */
+        if (sessionProgrammed)
+        {
+            boot_launch_after_verify = 1;
+        }
     }
 
     response.dataLength = 0;

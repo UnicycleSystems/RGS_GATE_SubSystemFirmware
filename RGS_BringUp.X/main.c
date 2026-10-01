@@ -17,6 +17,7 @@
 #include "../CommonFiles/header/lis2dw12.h"
 #include "../CommonFiles/header/i2c2_helpers.h"
 #include "../CommonFiles/header/lis2dw12_i2c2.h"
+#include "../CommonFiles/header/power_control.h"
 #include "../CommonFiles/header/bq40z50.h"
 
 #include <stdbool.h>
@@ -80,7 +81,9 @@ void PowerDown(void);
 
 void POST_Routine(void);
 void LaunchTest(void);
-uint8_t PowerButton (bool OnOff);
+/* The power button, cold/warm start, charger detection, ring LED and the
+ * power-off countdown come from CommonFiles power_control.c, shared with
+ * PuttingGate so both images behave identically. See power_control.h. */
 
 // PWM on RB11 via OC3/T3
 #define PWM_RB11_PERIOD   159   // PR3 value: 100kHz at FCY=16MHz (16000000/100000 - 1)
@@ -177,6 +180,9 @@ static void uart_puts(const char *s)
 #define JIG_CMD_RESET_DEVICE  0x09
 #define JIG_CMD_LENGTH        11      /* == sizeof(struct CMD_STRUCT_0) */
 #define JIG_CMD_SUCCESS       0x01
+/* Same value the bootloader answers with when it refuses for want of a charger
+ * (NO_CHARGER in boot_process.h, STATUS_NO_CHARGER in the host script). */
+#define JIG_CMD_NO_CHARGER    0xFB
 
 /* Handover marker printed when bring-up has finished and the jig is parked.
  * rgs_bootload_BringUp.py watches the serial line for this EXACT text: seeing
@@ -263,6 +269,27 @@ void __attribute__((interrupt, no_auto_psv)) _U1RXInterrupt(void)
 
         jigCmdLen = 0;
 
+        /* NO CHARGER, NO RESET.
+         *
+         * This reset drops us into the bootloader for a firmware update, and
+         * the bootloader refuses to erase or write without a charger - so
+         * resetting without one parks the unit there with a red LED and nothing
+         * to do. Refuse instead: answer with NO_CHARGER rather than SUCCESS,
+         * say so on the console, and carry on running with nothing changed, so
+         * the host can plug the charger in and ask again.
+         *
+         * ONE sample of /ACOK here, not the settled read: this is an interrupt,
+         * and the line is a steady DC level. */
+        if (!PWR_ChargerPresent())
+        {
+            uart_putb(JIG_CMD_RESET_DEVICE);
+            for (i = 0; i < 10; i++)
+                uart_putb(0x00);
+            uart_putb(JIG_CMD_NO_CHARGER);
+            uart_puts("\r\n** update refused: no charger - plug in and retry **\r\n");
+            continue;                   /* still running, nothing changed */
+        }
+
         /* Fixed response, byte-for-byte as the bootloader's ResetDevice(). */
         uart_putb(JIG_CMD_RESET_DEVICE);
         for (i = 0; i < 10; i++)
@@ -287,6 +314,42 @@ void __attribute__((interrupt, no_auto_psv)) _U1RXInterrupt(void)
 }
 
 
+/* One pass of the shared power behaviour, for every loop in the jig that
+ * waits: the ring LED's once-a-second charge update and its 100 ms pulse, and
+ * hold-to-power-off. Call it where a waiting loop used to poll the button.
+ *
+ * Driven by DoTask, TMR2's one-second tick, which nothing else in BringUp uses.
+ * The button test is debounced - a glitch cannot start a power-down - and the
+ * bi-colour LED is never borrowed, so callers have nothing to restore. */
+static void jig_idle(void)
+{
+    if (DoTask)
+    {
+        DoTask = 0;
+        PWR_RingChargeTick();
+
+        /* Run down the two-stage self-reset window, exactly as PuttingGate
+         * does. The reset request lives in the SHARED job_queue.c, so the jig
+         * inherits InitSelfReset()/ConfirmSelfReset() whether it dispatches
+         * them or not; without this tick an armed request could never lapse.
+         *
+         * Nothing arms it in the jig TODAY - BringUp does not pop the job
+         * queue, so a Jetson write to 169/170 is stored and never acted on, and
+         * the jig is reset over its UART instead (RESET_DEVICE). This is here so
+         * the shared mechanism cannot be left half-armed if that changes. */
+        if (SelfResetTimeout)
+        {
+            if (--SelfResetTimeout == 0)
+                CancelReset();
+        }
+    }
+    PWR_RingService();
+
+    if (PWR_ButtonStable(true, PWR_BUTTON_SETTLE_MS))
+        PowerDown();                    /* a qualifying hold never returns */
+}
+
+
 /* Print a prompt and wait for the operator to send any character.
  *
  * Anything already received is discarded first, so noise on the line - or a
@@ -301,9 +364,8 @@ void __attribute__((interrupt, no_auto_psv)) _U1RXInterrupt(void)
  * off by hand - from the menu, or from any prompt - without needing the
  * serial link or the host at all. Every wait in the jig goes through this
  * function, so putting it here covers the lot rather than each caller having
- * to remember. A qualifying hold never returns (PowerDown drops the rails and
- * resets); a short press just borrows the LEDs while counting, so restore them
- * on the way back.
+ * to remember. A qualifying hold never returns (PowerDown runs the shared
+ * countdown and power-off); a short press changes nothing. See jig_idle().
  *
  * @return the character the operator sent, for callers that want to offer a
  *         choice rather than just "carry on".
@@ -317,12 +379,7 @@ static uint8_t uart_wait_key(const char *prompt)
 
     while (!uart_key_ready)
     {
-        if (!POWER_BUTTON_GetValue())   /* active low */
-        {
-            PowerDown();                /* a qualifying hold never comes back */
-            BI_LED_GREEN_SetHigh();
-            BI_LED_RED_SetLow();
-        }
+        jig_idle();
         ClrWdt();
         __delay_ms(10);
     }
@@ -424,12 +481,7 @@ static void test_level(void)
         uart_key_ready = false;
         while (!uart_key_ready)
         {
-            if (!POWER_BUTTON_GetValue())
-            {
-                PowerDown();
-                BI_LED_GREEN_SetHigh();
-                BI_LED_RED_SetLow();
-            }
+            jig_idle();
             ClrWdt();
             __delay_ms(10);
         }
@@ -473,12 +525,7 @@ static void test_level(void)
          * rather than up to a second later, and the power button stays live. */
         for (i = 0; i < 100u && !uart_key_ready; i++)
         {
-            if (!POWER_BUTTON_GetValue())
-            {
-                PowerDown();
-                BI_LED_GREEN_SetHigh();
-                BI_LED_RED_SetLow();
-            }
+            jig_idle();
             ClrWdt();
             __delay_ms(10);
         }
@@ -581,12 +628,7 @@ static void test_beam_break(void)
         ClrWdt();
 
         /* Keep hold-to-power-off available, as everywhere else that waits. */
-        if (!POWER_BUTTON_GetValue())
-        {
-            PowerDown();
-            BI_LED_GREEN_SetHigh();
-            BI_LED_RED_SetLow();
-        }
+        jig_idle();
 
         front_now = !FRONT_BALL_SENSE_GetValue();   /* active low = broken */
         rear_now  = !REAR_BALL_SENSE_GetValue();
@@ -709,14 +751,10 @@ static void ev2400_passive_mode(void)
 
     for (;;)
     {
-        /* The only way out. PowerButton() wants a qualifying ~900 ms hold, so
-         * a knock cannot end the run; a short hold just falls through here. */
-        if (!POWER_BUTTON_GetValue())          /* active low */
-        {
-            PowerDown();                       /* a qualifying hold never returns */
-            BI_LED_GREEN_SetHigh();            /* too short - PowerButton had the LEDs */
-            BI_LED_RED_SetLow();
-        }
+        /* The only way out: a qualifying ~330 ms hold starts the shared
+         * power-off, which never returns. The press is debounced, so a knock
+         * cannot end the run, and a short hold just falls through here. */
+        jig_idle();
 
         /* Load switching, so one park can walk through several combinations
          * instead of costing a power cycle each. Same keys as the menu.
@@ -978,14 +1016,7 @@ static void jig_park_for_load(void)
 
     for (;;)
     {
-        if (!POWER_BUTTON_GetValue())      /* active low */
-        {
-            PowerDown();
-            /* Returned: hold was too short. Restore the verdict display,
-             * since PowerButton() borrowed the LEDs while counting. */
-            BI_LED_GREEN_SetHigh();
-            BI_LED_RED_SetLow();
-        }
+        jig_idle();                         /* power button + ring LED */
         ClrWdt();
         __delay_ms(50);
     }
@@ -1009,16 +1040,11 @@ int main(void)
      *                      Jetson stays OFF and power-on follows the normal
      *                      charger-loop / button-hold flow.
      */
-    bool warmBoot = ((RCONbits.POR == 0));
+    /* POR and BOR both tested - a brown-out is a cold start. Must be the first
+     * thing main() does, before anything touches RCON. */
+    bool warmBoot = PWR_IsWarmBoot();
 
-    if (warmBoot)
-    {
-        HOLD_PWR_SetDigitalOutput();
-        HOLD_PWR_SetHigh();
-        JETSON_5V_ON_SetDigitalOutput();
-        JETSON_5V_ON_SetHigh();
-        
-    }
+    PWR_EarlyRailHold(warmBoot);
 
     SYSTEM_Initialize();
 
@@ -1051,69 +1077,29 @@ int main(void)
     
     /* PIN_MANAGER_Initialize (inside SYSTEM_Initialize) bulk-writes the
      * latches, momentarily dropping both rails; the external FET gates ride
-     * through that dip on capacitance. Re-assert per the boot type:
-     *   warm : both rails HIGH -- Jetson must not lose power across a reset.
-     *   cold : HOLD_PWR stays HIGH (we MUST keep our own supply latched --
-     *          we arrived here from a bootloader handoff-reset, the button is
-     *          already released, and on battery there is nothing else holding
-     *          3V3 up; dropping HOLD_PWR here powers the device straight off
-     *          before the charger loop ever runs). Jetson rail stays OFF so
-     *          the charge-indication state is Jetson-dark until power-on
-     *          completes via the button.
-     */
-    HOLD_PWR_SetDigitalOutput();
-    JETSON_5V_ON_SetDigitalOutput();
-    HOLD_PWR_SetHigh();                  /* keep our own supply latched, both boot types */
-    if (warmBoot)
-    {
-        JETSON_5V_ON_SetHigh();
-    }
+     * through on capacitance. Re-assert them for this boot type. */
+    PWR_RailsAfterInit(warmBoot);
+
+    /* Cold start: identical to PuttingGate - button first, then a settled
+     * /ACOK; see power_control.c. Returns powered and running.
+     *
+     * The jig used to BYPASS this, so that on a pack bench with no charger it
+     * would never release HOLD_PWR and switch itself off. That is now safe
+     * without a bypass: HOLD_PWR is only released when /ACOK genuinely reports
+     * a charger, so a bench with no charger takes the battery path and stays
+     * up. With a charger connected at power-on, the jig now waits for a button
+     * press with the Jetson off, exactly as a field unit does. */
+    if (!warmBoot)
+        PWR_ColdStartPowerOn();
     else
-    {
-        JETSON_5V_ON_SetLow();
-    }
-    
-    
-    /* Cold-start power-on. Warm boots (firmware-update resume) skip all of
-     * this. The path splits on whether the charger is present, read from
-     * /ACOK on RA7 (DEBUG_IN): the charger IC pulls it LOW when AC is
-     * present, an external pull-up holds it HIGH otherwise.
-     *
-     *   NO charger  -> the only way 3V3 came up on battery is a deliberate
-     *                  button press, so power straight up and run. HOLD_PWR
-     *                  is already latched high -> single press, no charger
-     *                  loop, no second press.
-     *
-     *   Charger present -> the charger forced us on; the user has not asked
-     *                  to run yet. RELEASE HOLD_PWR so the charger alone
-     *                  holds the rail -- then pulling the charger while still
-     *                  idle drops power and the unit goes fully off (no
-     *                  latched-on-but-idle limbo). Show charge status and
-     *                  wait for a button press; on press, re-latch HOLD_PWR
-     *                  and power up. Once latched, unplugging keeps us
-     *                  running on battery.
-     *
-     * Safety: HOLD_PWR is only released when the charger DEFINITELY reads
-     * present (RA7 == 0). Any other reading falls through to run-and-stay-
-     * latched, so a misread can never strand a battery boot dead. */
-    /* BRING-UP JIG: the product's cold-start charger loop (release HOLD_PWR,
-     * charge-indicate, wait for a power-button press-and-hold) is bypassed.
-     * A provisioning jig must power straight up and run unconditionally, and
-     * must never release HOLD_PWR - on the pack bench there may be no charger
-     * holding the rail, so releasing it powers the board off. HOLD_PWR is
-     * already latched high above; fall straight through to running. */
+        PWR_ShowWarmRestart();
+
     /* Both paths are now "powered and running": show green. */
     BI_LED_GREEN_SetHigh();//Turn on Green LED
     BI_LED_RED_SetLow();//Turn off Red LED
 
-    /* Power-on is complete: clear the power-on reset-cause bits so every
-     * later reset in this power cycle reads as warm (POR==0). Deliberately
-     * placed AFTER the button-hold: if we crash or watchdog out of the
-     * charger loop / hold-count above, POR is still set and the retry is
-     * correctly treated as another cold start. SWR/WDTO are left untouched
-     * for any future reset-cause diagnostics (nothing reads them today). */
-    RCONbits.POR = 0;
-    RCONbits.BOR = 0;
+    /* Power-on is complete: later resets in this power cycle read as warm. */
+    PWR_MarkPowerOnComplete();
 
     /* The accelerometer correction values are NOT read here any more. They
      * live in EMULATE_EEPROM_Memory, which is not populated from the
@@ -1555,13 +1541,6 @@ void ShutdownProcessTemp()
 
 
 
-/* Provide a tiny delay; replace with your system delay if you have one */
-static void small_delay(void)
-{
-    /* ~1?2 ms software delay; adjust to taste or replace with __delay_ms(1) */
-    //for (volatile uint32_t i = 0; i < 8000UL; i++) { __asm__ volatile ("nop"); }
-    __delay_ms(1);
-}
 //void LIS2DW12_SetAddress_I2C2(uint8_t addr)
 //{
     
@@ -1655,110 +1634,22 @@ void QuickAcellerometerGrabber(void)
        
 }
 
-//refactor into a general purpose button thing...
+/* Hold-to-power-off: the shared ~330 ms hold, then the shared 60 s countdown
+ * and power-off - identical to PuttingGate. Lasers and the beam go off first,
+ * as PuttingGate's AllLightsOff() does. A qualifying hold never returns; a
+ * too-short press returns having changed nothing.
+ *
+ * Replaces the jig's own copy, which dropped the rails at once, then spun
+ * forever with the watchdog fed if external power held the rail up. */
 void PowerDown(void)
-{ 
-    uint8_t HoldOffms;
-    HoldOffms = 0;
-    if (PowerButton(Off))
-    {
-        JETSON_5V_ON_SetLow();
-        HOLD_PWR_SetLow();
-
-        // Give the external power-latch hardware time to actually cut supply
-        // before we reset. Without this delay, if the latch hasn't dropped
-        // power yet, the MCU reboots while still powered (going through the
-        // bootloader) with the button often still held, which re-latches
-        // power straight back on instead of turning off.
-        
-        while(1)
-        {
-            
-            ClrWdt();
-            __delay_ms(50);
-           
-            HoldOffms++;
-            if(HoldOffms >=30)
-            {
-                
-              RCONbits.EXTR = 1;
-              RCONbits.POR=1;
-              RCONbits.BOR=1;
-              while(1)
-                  ClrWdt();
-            }
-        }
-       
-    }
-    return;
-    
-}
-
-
-//returns 1 if Power button held long enough
-// or 0 if not....
-uint8_t PowerButton (bool OnOff)
 {
-    uint8_t ButtonPressHold;
-    ButtonPressHold=0;
-    bool ButtonPassed;
-    ButtonPassed=0;
-    
-    while(!POWER_BUTTON_GetValue())
+    if (PWR_ButtonHold(Off))
     {
-        ButtonPressHold++;
-
-        // Feed the watchdog: in the field (bootloader-programmed) config the
-        // WDT period is only ~1.06s (4.1ms x PS256), and this hold-count runs
-        // ~900ms -- without this, the WDT fires mid-count on every power-on
-        // hold and the device reset-loops through the flash sequence.
-        ClrWdt();
-
-       BI_LED_GREEN_SetHigh();//Turn on Green LED
-       BI_LED_RED_SetLow();//Turn off Red LED
-      __delay_ms(100);
-      BI_LED_RED_SetHigh();//Turn on Red LED
-      BI_LED_GREEN_SetLow();//Turn off Green LED
-      __delay_ms(50);
-      if (ButtonPressHold>5)
-      {
-          ButtonPassed=1;
-
-          break;
-      }
-
+        FRONT_LASER_PWM_SetHigh();      /* lasers and beam off - low is lit */
+        REAR_LASER_PWM_SetHigh();
+        BEAM_SetHigh();
+        PWR_ShutdownCountdownAndOff();  /* never returns */
     }
-    if (OnOff)
-    {
-         HOLD_PWR_SetHigh();
-         JETSON_5V_ON_SetHigh();
-         BI_LED_GREEN_SetHigh();//Turn/JETSON_5V_ON_SetHigh(); on Green LED
-         BI_LED_RED_SetLow();//Turn off Red LED 
-    }
-    else
-    {
-      BI_LED_RED_SetHigh();//Turn on Red LED
-      BI_LED_GREEN_SetLow();//Turn off Green LED  
-    }
-        
-
-    __delay_ms(50);
-    while(!POWER_BUTTON_GetValue())
-    {
-        ClrWdt();
-       __delay_ms(50);    
-    }
-    
-    __delay_ms(50);
-    
-     while(!POWER_BUTTON_GetValue())
-    {
-         ClrWdt();
-         __delay_ms(50);    
-    }
-    
-    return(ButtonPassed);
-         
 }
 
  

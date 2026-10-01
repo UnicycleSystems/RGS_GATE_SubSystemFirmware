@@ -47,6 +47,16 @@ enum BOOT_COMMAND_RESULT{
 void BOOT_Initialize(void);
 enum BOOT_COMMAND_RESULT BOOT_ProcessCommand(void);
 void BOOT_StartApplication(void);
+
+/* RGS: set to 1 by every successful erase or write. main() consumes it to show
+ * "programming" on the LEDs for a moment after the last flash operation. */
+extern volatile uint8_t boot_programming_activity;
+
+/* RGS: set to 1 when SELF_VERIFY passes on a session that actually programmed
+ * flash - an update that is complete and verified. main() then resets and runs
+ * the new application on its own, rather than waiting to be told to: a host
+ * that dies after the verify would otherwise leave a good image unstarted. */
+extern volatile uint8_t boot_launch_after_verify;
 bool BOOT_Verify(void);
 
 #endif 

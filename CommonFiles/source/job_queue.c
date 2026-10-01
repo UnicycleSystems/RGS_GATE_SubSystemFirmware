@@ -92,41 +92,53 @@ bool JobQueue_IsEmpty(void)
     return (tail == head);
 }
 
+/* See job_queue.h. The one place the lamp pins are driven, and the only writer
+ * of the lamp bits in LaserState. */
+void LampsApply(uint8_t lamps)
+{
+    lamps &= LaserState_LampsMask;
+
+    /* OUT OF LEVEL: locked out, nothing may be lit. Note this still lets lamps
+     * be switched OFF - lamps becomes 0, which is applied - so a power-down
+     * works while locked out. */
+    if (EMULATE_EEPROM_Memory[LaserStateAddr] & LaserState_OrientFault)
+        lamps = 0;
+
+    //Note logic APPEARS inverted, due to dual transistor drivers
+    if (lamps & 0x01)
+        FRONT_LASER_PWM_SetLow();
+    else
+        FRONT_LASER_PWM_SetHigh();
+
+    if (lamps & 0x02)
+        REAR_LASER_PWM_SetLow();
+    else
+        REAR_LASER_PWM_SetHigh();
+
+    if (lamps & 0x04)
+        BEAM_SetLow();
+    else
+        BEAM_SetHigh();
+    /* The IR emitter (bit 3) is deliberately NOT driven here. It is on RB11,
+     * shared with OC3, and PuttingGate drives that pin itself at start-up. */
+
+    /* Record what was ACTUALLY applied, for the Jetson to read back. Masked, so
+     * the lockout and the "lamps off" latch in this byte survive - assigning
+     * the whole byte here used to clear them, which let a refused request
+     * unlock itself as a side effect of being refused. */
+    EMULATE_EEPROM_Memory[LaserStateAddr] =
+        (uint8_t)((EMULATE_EEPROM_Memory[LaserStateAddr] & (uint8_t)~LaserState_LampsMask)
+                  | lamps);
+}
+
 void SetLasers()
 {
-    
-    //Note logic APPEARS inverted, due to dual transistor drivers
-  uint8_t LaserState;
- 
-  
-  LaserState=EMULATE_EEPROM_Memory[ConfigLasersAddr];
- 
-  if (LaserState&0x01)
-      FRONT_LASER_PWM_SetLow();
-  else
-      FRONT_LASER_PWM_SetHigh();
-  
-  if (LaserState&0x02)
-      REAR_LASER_PWM_SetLow();
-  else
-      REAR_LASER_PWM_SetHigh();
-  
-   if (LaserState&0x04)
-      BEAM_SetLow();
-  else
-      BEAM_SetHigh();
-  /*
-   if (LaserState&0x08)
-       PWM_IR_SetHigh();
-  else
-       PWM_IR_SetLow();
-  */
-  
-  
-  //update memory Note that this is NOT where it was read from.
-  //the purpose is to ensure that the jetson MAY  verify the change.
-  EMULATE_EEPROM_Memory[LaserStateAddr]=LaserState;
-     
+    /* The Jetson's request lives in ConfigLasersAddr and STAYS there, whether or
+     * not it can be acted on now. If the gate is out of level LampsApply()
+     * refuses it, and the orientation recovery re-applies this same byte once
+     * the gate is level again - so a command given mid-tilt is deferred, not
+     * lost. */
+    LampsApply(EMULATE_EEPROM_Memory[ConfigLasersAddr]);
 }
 void SetIRLevel()
 {
@@ -151,30 +163,74 @@ void ChangeMode()   // go into other modes - eg survey, self test, etc
 {
     
 }
-void InitSelfReset()    // First stage of reset mechanism
+void InitSelfReset()    // First stage of reset or power down
 {
-    if(EMULATE_EEPROM_Memory[169]==0x56)
+   
+   //Whatever happens, any call to here will clear the 'confirm reset' and PowerOff states
+   EMULATE_EEPROM_Memory[PowerOffFlag]=0;
+   EMULATE_EEPROM_Memory[170]=0;
+   
+   
+    if((EMULATE_EEPROM_Memory[169]==0x56)|| (EMULATE_EEPROM_Memory[169]==0x23))
     {
-        EMULATE_EEPROM_Memory[169]=0;
         BI_LED_GREEN_SetLow();
         BI_LED_RED_SetHigh();
         SelfResetTimeout=10;
+        
+        if(EMULATE_EEPROM_Memory[169]==0x56)//This sets up for a reset
+            EMULATE_EEPROM_Memory[169]=0x41;  // set up another guard rail for reset
+       
+        
+    
+        if(EMULATE_EEPROM_Memory[169]==0x23)//This sets up for a PowerDown
+            EMULATE_EEPROM_Memory[169]=0x42;//set up guard rail for power down
+            
     }
+    else// any invalid write, cancel anything pending
+    {
+        SelfResetTimeout=0;
+        EMULATE_EEPROM_Memory[169]=0;   
+    }
+    // Do nothing if no valid value is written in here
     //TODO: option to add on an error report to jetson
     
 }
 
-void ConfirmSelfReset() // second stage of reset mechanism-- do within 10s of InitSelfReset
+
+void ConfirmSelfReset() // second stage of reset mechanism or power down -- do within 10s of InitSelfReset
 {
-    if(SelfResetTimeout&&(EMULATE_EEPROM_Memory[170]==0x2F))
+    if((SelfResetTimeout)&&(EMULATE_EEPROM_Memory[170]==0x2F))
     {
-        asm("reset");
-        while(1);
+        
+        if(EMULATE_EEPROM_Memory[169]==0x41) // the reset case
+        {    
+            
+        /* This used to refuse the reset unless /ACOK reported a charger, so a
+         * unit could not drop into the bootloader with no way to be flashed.
+         * It was REMOVED: the refusal was silent - the host saw a PIC that
+         * simply would not reset - and it fired even with a charger connected.
+         *
+         * Nothing is lost by taking it out. The bootloader itself refuses every
+         * erase and write without a charger (BOOT_BlockErase / BOOT_BlockWrite
+         * in boot_image.c), which is where the image is actually at risk, so a
+         * unit that resets without one still cannot damage anything: it waits in
+         * the bootloader and a power cycle runs the existing application again. */
+            asm("reset");
+            while(1);
+        }
+        
+      if(EMULATE_EEPROM_Memory[169]==0x42) // the Power down case
+        {       
+         EMULATE_EEPROM_Memory[PowerOffFlag]=ImmediatePowerOff;  // this will caues the 
+        }  
+        
+        
     }
-    else
+    else  // so any 'bad ' confirm will cancel the reset or power down..... 
     {
        EMULATE_EEPROM_Memory[169]=0;
        EMULATE_EEPROM_Memory[170]=0;
+       EMULATE_EEPROM_Memory[PowerOffFlag]=0;
        BI_LED_GREEN_SetLow();
        BI_LED_RED_SetHigh(); 
     }
@@ -189,9 +245,14 @@ void CancelReset()// if confirm reset not called in time, then clear
     BI_LED_RED_SetLow();
     EMULATE_EEPROM_Memory[169]=0;
     EMULATE_EEPROM_Memory[170]=0;
+    EMULATE_EEPROM_Memory[PowerOffFlag]=0;
     SelfResetTimeout=0;  //can't assume it must be, as we may somehowe directly call this 
     
 }
+
+
+
+
 
 void ConfigAccelerometer()
 {

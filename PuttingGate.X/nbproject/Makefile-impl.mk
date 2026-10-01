@@ -27,7 +27,7 @@ CLEAN_SUBPROJECTS=${CLEAN_SUBPROJECTS_${SUBPROJECTS}}
 PROJECTNAME=PuttingGate.X
 
 # Active Configuration
-DEFAULTCONF=standalone
+DEFAULTCONF=default
 CONF=${DEFAULTCONF}
 
 # All Configurations

@@ -16,9 +16,11 @@
 #include "../CommonFiles/header/lis2dw12.h"
 #include "../CommonFiles/header/i2c2_helpers.h"
 #include "../CommonFiles/header/lis2dw12_i2c2.h"
+#include "../CommonFiles/header/power_control.h"
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>     /* abs(), used on the pitch/roll values */
 #include "../CommonFiles/header/i2c_write_queue.h"
 #include "../CommonFiles/header/address_block_lookup.h"
 #include "../CommonFiles/header/job_queue.h"
@@ -70,6 +72,7 @@ void HandleTaskWarning(uint16_t code);  // handler for any errors/warnings on ro
 ////////////////////////////////////////////////
 void AllLightsOn (void);
 void AllLightsOff (void);
+void AllLightsRestore (void);
 void AllPowerDown (void);
 uint8_t CopyLightState; // to allow the lasers etc to be put back as we found them
 void WarnCodeToJetson(uint16_t WarnCode);
@@ -94,25 +97,9 @@ void PowerDown(bool ForcePowerDown);
 #define ButtonPwrDwn 0
 
 
-uint8_t PowerButton (bool OnOff);
-
-/* Debounced power-button reads. See the definitions above PowerButton().
- * Every test of the button goes through these: a single GetValue() sample
- * cannot tell a press from contact bounce or a noise glitch, and on this
- * board that decides whether the unit powers up or shuts down. */
-#define BUTTON_SAMPLE_MS   5    /* gap between samples; bounce is ~1-10 ms */
-#define BUTTON_SETTLE_MS  25    /* agreeing samples needed to call it real */
-#define BUTTON_RELEASE_MS 50    /* longer, to be sure a press is finished  */
-static bool ButtonStable(bool pressed, uint16_t settle_ms);
-static void ButtonWaitReleased(void);
-
-/* /ACOK (RA7) settling - see AcokWaitPresent(). Generous timeout for now; the
- * measured settle time is recorded in EEPROM byte 19 so it can be set from
- * data rather than guesswork. */
-#define ACOK_SAMPLE_MS     5
-#define ACOK_SETTLE_MS    25
-#define ACOK_TIMEOUT_MS 2000
-static bool AcokWaitPresent(uint16_t timeout_ms);
+/* The power button, cold/warm start, charger detection, ring LED and the
+ * power-off countdown live in CommonFiles power_control.c, shared with
+ * RGS_BringUp so both images behave identically. See power_control.h. */
 
 // PWM on RB11 via OC3/T3
 #define PWM_RB11_PERIOD   159   // PR3 value: 100kHz at FCY=16MHz (16000000/100000 - 1)
@@ -129,7 +116,6 @@ bool queuepanic;
 
 
 I2C_WriteJob_t LoadJobFromEEprom;
- bool charged;
  
  
  int16_t xcal;
@@ -169,38 +155,14 @@ int main(void)
      *                      Jetson stays OFF and power-on follows the normal
      *                      charger-loop / button-hold flow.
      */
-    /* BOR is tested as well as POR. A brown-out sets BOR and leaves POR clear,
-     * so with POR alone a sagging rail read as a WARM boot: no button check,
-     * straight to running with the Jetson rail raised - a unit apparently
-     * powering itself on. A brown-out is a cold start, so treat it as one.
-     * Pressing the power button appears to dip the rail on this hardware
-     * (it switches the regulator's input), which makes this reachable. */
-    bool warmBoot = ((RCONbits.POR == 0) && (RCONbits.BOR == 0));
+    /* POR and BOR both tested - a brown-out is a cold start. Must be the first
+     * thing main() does, before anything touches RCON. */
+    bool warmBoot = PWR_IsWarmBoot();
 
-    /* TEMPORARY DIAGNOSTIC - remove with bytes 17-19. The reset-cause register
-     * as found, before anything below clears a bit of it. Low byte at 20:
-     * bit0 POR, bit1 BOR, bit2 IDLE, bit3 SLEEP, bit4 WDTO, bit5 SWDTEN,
-     * bit6 SWR, bit7 EXTR. High byte at 21 carries TRAPR and IOPUWR. */
-    EMULATE_EEPROM_Memory[20] = (uint8_t)(RCON & 0xFF);
-    EMULATE_EEPROM_Memory[21] = (uint8_t)(RCON >> 8);
-    
-//#define  quickhacktest
-    
-     
-
-    if (warmBoot)
-    {
-        HOLD_PWR_SetDigitalOutput();
-        HOLD_PWR_SetHigh();
-        JETSON_5V_ON_SetDigitalOutput();
-        JETSON_5V_ON_SetHigh();
-
-    
-    }
+    PWR_EarlyRailHold(warmBoot);
 
     SYSTEM_Initialize();
-    REAR_LASER_PWM_SetHigh();
-    FRONT_LASER_PWM_SetHigh();
+  
  
 
     LedOn=0;
@@ -210,8 +172,12 @@ int main(void)
     GateTimeout=0;
     TaskIndex=0;
      
-    //This is a 
-    EMULATE_EEPROM_Memory[128] = 0;  //This should cause both lasers off
+    /* The REQUESTED lamp state, until the Jetson says otherwise. All three on
+     * is the gate's working default, and it has to be set here because the
+     * orientation recovery re-applies this byte: left at zero, the first return
+     * to level would "restore" darkness. It drives nothing by itself - only a
+     * dispatched SetLasers() job or AllLightsRestore() acts on it. */
+    EMULATE_EEPROM_Memory[ConfigLasersAddr] = LaserState_LampsMask;
     PWM_RB11_Init();
     PWM_RB11_Enable();
     PWM_RB11_SetDuty(10);
@@ -221,210 +187,24 @@ int main(void)
     
     /* PIN_MANAGER_Initialize (inside SYSTEM_Initialize) bulk-writes the
      * latches, momentarily dropping both rails; the external FET gates ride
-     * through that dip on capacitance. Re-assert per the boot type:
-     *   warm : both rails HIGH -- Jetson must not lose power across a reset.
-     *   cold : HOLD_PWR stays HIGH (we MUST keep our own supply latched --
-     *          we arrived here from a bootloader handoff-reset, the button is
-     *          already released, and on battery there is nothing else holding
-     *          3V3 up; dropping HOLD_PWR here powers the device straight off
-     *          before the charger loop ever runs). Jetson rail stays OFF so
-     *          the charge-indication state is Jetson-dark until power-on
-     *          completes via the button.
-     */
-    HOLD_PWR_SetDigitalOutput();
-    JETSON_5V_ON_SetDigitalOutput();
-    HOLD_PWR_SetHigh();                  /* keep our own supply latched, both boot types */
-    if (warmBoot)
-    {
-        JETSON_5V_ON_SetHigh();
-        ClrWdt();
-        
-    }
-    else
-    {
-          JETSON_5V_ON_SetLow();
-  
-    }
-    
-    
-    /* Cold-start power-on. Warm boots (firmware-update resume) skip all of
-     * this. The path splits on whether the charger is present, read from
-     * /ACOK on RA7 (DEBUG_IN): the charger IC pulls it LOW when AC is
-     * present, an external pull-up holds it HIGH otherwise.
-     *
-     *   NO charger  -> the only way 3V3 came up on battery is a deliberate
-     *                  button press, so power straight up and run. HOLD_PWR
-     *                  is already latched high -> single press, no charger
-     *                  loop, no second press.
-     *
-     *   Charger present -> the charger forced us on; the user has not asked
-     *                  to run yet. RELEASE HOLD_PWR so the charger alone
-     *                  holds the rail -- then pulling the charger while still
-     *                  idle drops power and the unit goes fully off (no
-     *                  latched-on-but-idle limbo). Show charge status and
-     *                  wait for a button press; on press, re-latch HOLD_PWR
-     *                  and power up. Once latched, unplugging keeps us
-     *                  running on battery.
-     *
-     * Safety: HOLD_PWR is only released when the charger DEFINITELY reads
-     * present (RA7 == 0). Any other reading falls through to run-and-stay-
-     * latched, so a misread can never strand a battery boot dead.
-     *
-     * HOW THE TWO ARE TOLD APART, and why it is not a single read of RA7:
-     *
-     * The BUTTON is asked first. On battery the press is what powers the rail,
-     * and it outlasts startup, so the button is still down when we get here -
-     * measured on the bench. Nobody is touching it on a charger start. That
-     * reading is available immediately and needs no settling.
-     *
-     * Only when the button is NOT held do we look at /ACOK, and then we WAIT
-     * for it: on a charger-powered start the PIC is running before the charger
-     * IC has asserted its AC-present output, so the old single sample here read
-     * "no charger" while a read moments later read "charger present" - which
-     * sent a charger boot down the battery path and left it latched on when the
-     * charger was pulled out. AcokWaitPresent() polls for a stable low instead.
-     *
-     * Waiting costs nothing on a button start, because that case never reaches
-     * it. */
+     * through on capacitance. Re-assert them for this boot type. */
+    PWR_RailsAfterInit(warmBoot);
+
+    /* Cold start: button first, then a settled /ACOK - see power_control.c.
+     * Returns powered and running. A warm boot - normally the hand-over after
+     * a firmware upgrade - is already running, Jetson included, so it only
+     * shows the three green flashes. */
     if (!warmBoot)
-    {
-           
-        
-        /* ---- TEMPORARY DIAGNOSTIC - remove once the charger-boot question is
-         * settled -----------------------------------------------------------
-         * Snapshot the two inputs this branch turns on, BEFORE anything acts
-         * on them. Address 17 is unused: the low read-only block ends at 16
-         * and the high block descends to 109, so nothing in the map moves.
-         *
-         *   bit 0: /ACOK  (RA7)   0 = charger present
-         *   bit 1: button (RB10)  0 = pressed
-         *   bit 2: warmBoot
-         *
-         * Read it from the Jetson with peek.py. */
-        EMULATE_EEPROM_Memory[17] = (uint8_t)
-                ((DEBUG_IN_GetValue()     ? 0x01 : 0x00) |
-                 (POWER_BUTTON_GetValue() ? 0x02 : 0x00) |
-                 (warmBoot                ? 0x04 : 0x00));
+        PWR_ColdStartPowerOn();
+    else
+        PWR_ShowWarmRestart();
 
-        /* "not measured" sentinel, so a real 0 in byte 19 can only mean /ACOK
-         * was already low - it read 0 once simply because the button-held path
-         * never calls AcokWaitPresent() and the array starts zeroed. */
-        EMULATE_EEPROM_Memory[19] = 0xFE;
-
-        /* Button held -> the user powered this on, and no amount of waiting
-         * for /ACOK changes that. Otherwise something else brought the rail
-         * up, so give the charger line time to say whether it was the
-         * charger. */
-        bool chargerBoot;
-
-        if (ButtonStable(true, BUTTON_SETTLE_MS))
-            chargerBoot = false;
-        else
-            chargerBoot = AcokWaitPresent(ACOK_TIMEOUT_MS);
-
-        if (chargerBoot)                   /* /ACOK low -> charger present */
-        {
-            uint8_t diagflash;
-
-            charged = 0;
-            HOLD_PWR_SetLow();             /* charger holds the rail; unplug-while-idle -> off */
-
-            /* TEMPORARY: two slow GREEN flashes = charger branch taken. Shown
-             * with the Jetson still down, unlike the byte above. */
-            for (diagflash = 0; diagflash < 2; diagflash++)
-            {
-                BI_LED_RED_SetLow();
-                BI_LED_GREEN_SetHigh();
-                __delay_ms(250);
-                ClrWdt();
-                BI_LED_GREEN_SetLow();
-                __delay_ms(250);
-                ClrWdt();
-            }
-
-            /* Charge display, until a real press asks us to power on. This
-             * whole wait belongs to the charger case ONLY: on battery there
-             * is nobody to wait for - the press that powers the rail IS the
-             * power-on. It used to sit outside this branch, so a battery
-             * boot waited here for a second press that the user had no reason
-             * to make, with HOLD_PWR latched and the pack draining. */
-            while(!ButtonStable(true, BUTTON_SETTLE_MS))
-            {
-                ClrWdt();
-                if(!charged)
-                {
-                 RED_LED_ON_SetHigh();
-                __delay_ms(5);
-                RED_LED_ON_SetLow();
-                __delay_ms(1000);
-                }
-
-                if(VER_0_GetValue())
-                {
-                    charged=1;
-                    BI_LED_GREEN_SetHigh();//Turn on Green LED
-                    BI_LED_RED_SetLow();//Turn off Red LED
-                }
-                else
-                {
-                    charged=0;
-                   BI_LED_RED_SetHigh();//Turn off Red LED
-                    BI_LED_GREEN_SetLow();//Turn on Green LED
-                }
-            }
-            // button pressed: take ownership of our own supply and power on
-            RED_LED_ON_SetLow();
-            HOLD_PWR_SetHigh();
-            while(!PowerButton(On))//wait for a 'power on' press and hold to complete
-                ClrWdt();
-        }
-        else
-        {
-            /* No charger. The 3V3 rail can only have come up because the user
-             * is holding the button, so THIS press is the power-on and no
-             * second press is asked for. HOLD_PWR was latched high above (and
-             * by the bootloader before that), so the unit stays up on release.
-             *
-             * The Jetson rail has to be raised here: it was dropped above for
-             * the cold path, and PowerButton(On) - the only other place that
-             * raises it - is on the charger branch.
-             *
-             * Then wait for a DEBOUNCED release before running. The main loop
-             * reads a held button as a power-DOWN request and PowerButton(Off)
-             * qualifies after ~330 ms, so entering the loop with this press
-             * still held would shut the unit straight back down. */
-            uint8_t diagflash;
-
-            /* TEMPORARY: two slow RED flashes = battery branch taken, i.e.
-             * /ACOK read HIGH. Seeing this with the charger plugged in is the
-             * misread we are hunting. */
-            for (diagflash = 0; diagflash < 2; diagflash++)
-            {
-                BI_LED_GREEN_SetLow();
-                BI_LED_RED_SetHigh();
-                __delay_ms(250);
-                ClrWdt();
-                BI_LED_RED_SetLow();
-                __delay_ms(250);
-                ClrWdt();
-            }
-
-            JETSON_5V_ON_SetHigh();
-            ButtonWaitReleased();
-        }
-    }
     /* Both paths are now "powered and running": show green. */
     BI_LED_GREEN_SetHigh();//Turn on Green LED
     BI_LED_RED_SetLow();//Turn off Red LED
 
-    /* Power-on is complete: clear the power-on reset-cause bits so every
-     * later reset in this power cycle reads as warm (POR==0). Deliberately
-     * placed AFTER the button-hold: if we crash or watchdog out of the
-     * charger loop / hold-count above, POR is still set and the retry is
-     * correctly treated as another cold start. SWR/WDTO are left untouched
-     * for any future reset-cause diagnostics (nothing reads them today). */
-    RCONbits.POR = 0;
-    RCONbits.BOR = 0;
+    /* Power-on is complete: later resets in this power cycle read as warm. */
+    PWR_MarkPowerOnComplete();
 
    //pull in the accelerometer cal values.
      xcal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalX_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalX_LSB_Addr]);
@@ -520,38 +300,51 @@ int main(void)
             }
   PWM_IR_SetHigh();
 
+    /* Lamps start OFF, and locked out by bit 6, until the orientation has been
+     * READ at least once.
+     *
+     * The gate may have been powered up already tilted, and PIN_MANAGER_Initialize
+     * leaves all three lamp pins driven low - lit, the drivers being inverted - so
+     * anything lit here stays lit until the accelerometer task first runs a second
+     * or more later. Starting dark means the beams cannot point somewhere they
+     * should not during that window.
+     *
+     * Setting bit 6 arms the existing recovery path: the first reading that is
+     * within tolerance clears it and calls AllLightsRestore(), which lights
+     * everything. A reading out of tolerance finds bit 6 already set and simply
+     * leaves the lamps dark. See GetAccel(). */
+    EMULATE_EEPROM_Memory[LaserStateAddr] |= 0x40;
+    AllLightsOff();
+
     while(1)
     {   
-      
-       /* ---- TEMPORARY DIAGNOSTIC - remove along with the byte at 17 -------
-        * LIVE pin sample, refreshed every pass, so the charger line can be
-        * watched with "peek.py 17 2" while the charger is plugged in and
-        * pulled out. 17 is the once-only snapshot taken at the branch; 18 is
-        * what the pins read right now.
-        *
-        *   bit 0: /ACOK    (RA7)   0 = charger present
-        *   bit 1: button   (RB10)  0 = pressed
-        *   bit 2: HOLD_PWR (RA10)  1 = our own supply latched on
-        *   bit 7: always set when written, so a reading of 0x00 means the main
-        *          loop has NOT run this boot rather than "all three low"
-        */
-       EMULATE_EEPROM_Memory[18] = (uint8_t)(0x80 |
-               ((DEBUG_IN_GetValue()     ? 0x01 : 0x00) |
-                (POWER_BUTTON_GetValue() ? 0x02 : 0x00) |
-                (HOLD_PWR_GetValue()     ? 0x04 : 0x00)));
+       
+       /* Ends the ring LED's 100 ms "charged" pulse without blocking. */
+       PWR_RingService();
 
-       /* Debounced, so a glitch on the line cannot start a power-down and
-        * blank the LEDs on its way through PowerButton(). Costs one sample
-        * per loop while the button is idle. */
-       if(ButtonStable(true, BUTTON_SETTLE_MS))
+       /* Debounced, so a glitch on the line cannot start a power-down. Costs
+        * one sample per loop while the button is idle; while it is pressed the
+        * ring LED flashes fast. */
+       if(PWR_ButtonStable(true, PWR_BUTTON_SETTLE_MS))
          PowerDown(ButtonPwrDwn);
 
         if(DoTask) //this is set periodically by the TMR2 interrupt. Nominally 1 second.
             {
                 DoTask=0; // this will re-set itself in 1 second
+                if (EMULATE_EEPROM_Memory[PowerOffFlag]==ImmediatePowerOff)
+                    AllPowerDown();
+
+                /* Once a second: sample the charger and set the ring LED. */
+                PWR_RingChargeTick();
                 if(SelfResetTimeout)// if the first part of reset been issued, it needs to be completed within 10 seconds or is cancelled.
                 {
-                    if(!SelfResetTimeout--)
+                    /* Post-decrement tested the value BEFORE decrementing, so
+                     * the count went 10..1 and then to 0 with the test never
+                     * true; on the next tick the outer if was false, so
+                     * CancelReset() was unreachable. An armed request therefore
+                     * stayed armed for ever - red LED and all - instead of
+                     * lapsing after 10 s. Decrement FIRST, cancel on zero. */
+                    if(--SelfResetTimeout == 0)
                         CancelReset();
                 }
                              
@@ -724,13 +517,6 @@ void CallJetsonJob(void)
 
 
 
-/* Provide a tiny delay; replace with your system delay if you have one */
-static void small_delay(void)
-{
-    /* ~1?2 ms software delay; adjust to taste or replace with __delay_ms(1) */
-    //for (volatile uint32_t i = 0; i < 8000UL; i++) { __asm__ volatile ("nop"); }
-    __delay_ms(1);
-}
 //void LIS2DW12_SetAddress_I2C2(uint8_t addr)
 //{
     
@@ -831,9 +617,26 @@ uint8_t QuickAcellerometerGrabber(void)
        EMULATE_EEPROM_Memory[RollMSB_Addr] = (uint8_t)(uroll);
        
        if ((abs(pitch)>455)||(abs(roll)>455))
+       {
+           if (!(EMULATE_EEPROM_Memory[LaserStateAddr]&0x40))
+           {
+               EMULATE_EEPROM_Memory[LaserStateAddr]|=0x40;
+               AllLightsOff();
+           }
            return(1);  // indicates unacceptable orientation
+       }
+           // indicates unacceptable orientation
        else
-           return(0); // all good
+       {
+           if (EMULATE_EEPROM_Memory[LaserStateAddr]&0x40)
+           {
+             EMULATE_EEPROM_Memory[LaserStateAddr]&=0xBF;
+             AllLightsRestore();
+           }
+            
+       }
+           
+       return(0); 
        
        
          
@@ -862,18 +665,18 @@ void PowerDown(bool ForcePowerDown)
   
     
     if (!ForcePowerDown)  // we could be here from a direct call or button push.... 
-        if (!PowerButton(Off)) 
+        if (!PWR_ButtonHold(Off))          /* released too soon: nothing happens */
         {
             return;
         }
-     
+
         //AllPowerDown(); -- use the handler rather than direct call
         HandleTaskWarning(PowerOff_1_min);
-        
-    
-    /* Only reached when the hold was too short - a qualifying hold never
-     * returns from the loop above. PowerButton() borrowed the LEDs while
-     * counting and left them out, so set to AMBER for rogue state */
+
+
+    /* Not reached in practice: HandleTaskWarning(PowerOff_1_min) runs
+     * AllPowerDown(), which never returns, and a too-short hold returned above.
+     * Left as AMBER in case that ever changes, so a rogue state is visible. */
     BI_LED_GREEN_SetHigh();
     BI_LED_RED_SetHigh();
     return;
@@ -881,165 +684,6 @@ void PowerDown(bool ForcePowerDown)
 }
 
 
-/* Debounced read of the power button.
- *
- * Returns true only when the button has read `pressed` continuously for
- * settle_ms, and false the moment a sample disagrees - so a caller can poll
- * it cheaply: asking "is it pressed?" of an idle button costs one sample and
- * returns immediately.
- *
- * POWER_BUTTON is active LOW, with the internal pull-up enabled on CN16, so
- * "pressed" is a LOW reading. Sampling every few milliseconds and restarting
- * the count on any disagreeing sample outlasts the 1-10 ms of contact bounce,
- * and means a bounce gap part-way through a press is not read as a release.
- */
-static bool ButtonStable(bool pressed, uint16_t settle_ms)
-{
-    uint16_t waited;
-
-    for (waited = 0; waited < settle_ms; waited += BUTTON_SAMPLE_MS)
-    {
-        if (((POWER_BUTTON_GetValue() == 0) ? true : false) != pressed)
-            return false;
-        __delay_ms(BUTTON_SAMPLE_MS);
-        ClrWdt();
-    }
-    return (((POWER_BUTTON_GetValue() == 0) ? true : false) == pressed);
-}
-
-/* Wait for /ACOK to say the charger is present, rather than sampling it once.
- *
- * RA7 is the charger IC's open-collector AC-present output, pulled up to the
- * PIC's own 3V3. On a charger-powered start the PIC is up and running before
- * that output has asserted: measured on the bench, this branch read "no
- * charger" while a read moments later read "charger present" - so one early
- * sample committed the whole session to the wrong path.
- *
- * Polls for a low that holds for ACOK_SETTLE_MS, returning true as soon as one
- * is seen and false if the line stays high for the whole timeout. Called only
- * when the button is not held, so a button power-on never waits.
- *
- * The TEMPORARY write to byte 19 records how long it took, in 10 ms units
- * (0xFF = never asserted), so ACOK_TIMEOUT_MS can be chosen from measurements.
- * Remove it with the rest of the diagnostics.
- */
-static bool AcokWaitPresent(uint16_t timeout_ms)
-{
-    uint16_t waited;
-    uint8_t  low_run = 0;                  /* consecutive low samples */
-
-    for (waited = 0; waited < timeout_ms; waited += ACOK_SAMPLE_MS)
-    {
-        if (DEBUG_IN_GetValue() == 0)
-        {
-            low_run++;
-            if (low_run >= (ACOK_SETTLE_MS / ACOK_SAMPLE_MS))
-            {
-                uint16_t tens = (uint16_t)(waited / 10u);
-                EMULATE_EEPROM_Memory[19] = (uint8_t)((tens > 254u) ? 254u : tens);
-                return true;
-            }
-        }
-        else
-        {
-            low_run = 0;                   /* must be CONTINUOUSLY low */
-        }
-        __delay_ms(ACOK_SAMPLE_MS);
-        ClrWdt();
-    }
-
-    EMULATE_EEPROM_Memory[19] = 0xFF;      /* never asserted within the timeout */
-    return false;
-}
-
-/* Block until the button has been released and stayed released. Used wherever
- * one press must not be seen twice by the code that follows. */
-static void ButtonWaitReleased(void)
-{
-    while (!ButtonStable(false, BUTTON_RELEASE_MS))
-    {
-        __delay_ms(BUTTON_SAMPLE_MS);
-        ClrWdt();
-    }
-}
-
-//returns 1 if Power button held long enough
-// or 0 if not....
-uint8_t PowerButton (bool OnOff)
-{
-    uint8_t ButtonPressHold;
-    ButtonPressHold=0;
-    bool ButtonPassed;
-    ButtonPassed=0;
-    
-    /* Count for as long as the button is held. Tested with the debounced read
-     * so that a bounce gap mid-press is not taken for a release - which used
-     * to abort the count and report "released too soon" on a genuine hold. */
-    while(!ButtonStable(false, BUTTON_SETTLE_MS))
-    {
-        ButtonPressHold++;
-
-        // Feed the watchdog: in the field (bootloader-programmed) config the
-        // WDT period is only ~1.06s (4.1ms x PS256), and this hold-count runs
-        // ~900ms -- without this, the WDT fires mid-count on every power-on
-        // hold and the device reset-loops through the flash sequence.
-        ClrWdt();
-
-       BI_LED_GREEN_SetHigh();//Turn on Green LED
-       BI_LED_RED_SetLow();//Turn off Red LED
-      __delay_ms(20);
-      BI_LED_RED_SetHigh();//Turn on Red LED
-      BI_LED_GREEN_SetLow();//Turn off Green LED
-      __delay_ms(10);
-      if (ButtonPressHold>10)
-      {
-          ButtonPassed=1;
-
-          break;
-      }
-
-    }
-    /* Act only on a qualifying hold. A press that is released too soon leaves
-     * the power rails exactly as it found them - the LED activity above was
-     * just feedback while counting, so put the LEDs back out and report the
-     * failure to the caller. */
-    if (ButtonPassed)
-    {
-        if (OnOff)
-        {
-             HOLD_PWR_SetHigh();
-             JETSON_5V_ON_SetHigh();
-             BI_LED_GREEN_SetHigh();//Turn/JETSON_5V_ON_SetHigh(); on Green LED
-             BI_LED_RED_SetLow();//Turn off Red LED
-        }
-        else
-        {
-          BI_LED_RED_SetHigh();//Turn on Red LED
-          BI_LED_GREEN_SetLow();//Turn off Green LED
-        }
-    }
-    else
-    {
-      BI_LED_GREEN_SetLow();//Released too soon - both LEDs out
-      BI_LED_RED_SetLow();
-
-      /* Return straight away. The wait-for-release below must NOT run on this
-       * path: the counting loop only exited because the button was already
-       * released, so there is nothing to wait for - but if the user presses
-       * again while we sit here, that press is consumed as a release-wait and
-       * never counted. The caller loops on this function, so a swallowed press
-       * means no subsequent press ever powers the unit up. */
-      return(ButtonPassed);
-    }
-
-    /* Only after a qualifying hold: wait for release so the caller does not
-     * see the same press a second time. Replaces two hand-rolled wait loops
-     * that each exited on a single high sample. */
-    ButtonWaitReleased();
-
-    return(ButtonPassed);
-         
-}
 
  
 // ---- PWM on RB11 via OC3 / T3 ----
@@ -1083,6 +727,34 @@ void PWM_RB11_SetDuty(uint8_t duty)
 /// normal tasks list, 'Standard'
 /// alternative, test builds are 'Test1' and 'Test2'
 
+/* The round-robin tasks flick the bi-colour LED red while they run, as a sign
+ * of life - deliberately brief, and only visible if you look for it.
+ *
+ * They used to finish by setting it back to GREEN unconditionally, which quietly
+ * destroyed whatever state the rest of the system had put there: within a second
+ * of InitSelfReset() showing red for an armed reset request, a task tick wiped
+ * it. That made the LED useless as a state indicator and made the loader's
+ * "verify LED is RED" prompt lie. Save the state on entry, restore it on every
+ * exit, and the flick costs nothing it does not own. */
+static uint8_t LedStateSave(void)
+{
+    return (uint8_t)((BI_LED_GREEN_GetValue() ? 0x01u : 0x00u)
+                   | (BI_LED_RED_GetValue()   ? 0x02u : 0x00u));
+}
+
+static void LedStateRestore(uint8_t state)
+{
+    if (state & 0x01u)
+        BI_LED_GREEN_SetHigh();
+    else
+        BI_LED_GREEN_SetLow();
+
+    if (state & 0x02u)
+        BI_LED_RED_SetHigh();
+    else
+        BI_LED_RED_SetLow();
+}
+
 /* Read total pack voltage from the BQ40Z50 and publish it for the Jetson.
  *
  * SBS Voltage() (0x09) returns total pack millivolts as a 16-bit word, LSB
@@ -1117,6 +789,7 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
      * seconds of every boot. */
     static uint16_t warning = 0;
     uint8_t FuelGuagePercent;
+    uint8_t ledWas = LedStateSave();
     BI_LED_GREEN_SetLow();//Turn off Green LED
     BI_LED_RED_SetHigh();//Turn on Red LED
     ClrWdt();
@@ -1136,8 +809,7 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
              * flat pack - and skip the thresholds: raw was never filled, so
              * judging it would act on whatever was left on the stack, and
              * could walk the unit towards a false power-off. */
-            BI_LED_GREEN_SetHigh();//Turn on Green LED
-            BI_LED_RED_SetLow();//Turn off Red LED
+            LedStateRestore(ledWas);
             warning|=BatteryPackCommsFailure;
             return(warning);
         }
@@ -1198,8 +870,7 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
              * flat pack - and skip the thresholds: raw was never filled, so
              * judging it would act on whatever was left on the stack, and
              * could walk the unit towards a false power-off. */
-            BI_LED_GREEN_SetHigh();//Turn on Green LED
-            BI_LED_RED_SetLow();//Turn off Red LED
+            LedStateRestore(ledWas);
             warning|=BatteryPackCommsFailure;
             return(warning);
         }
@@ -1250,24 +921,23 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
     
             
     ClrWdt();
-    BI_LED_GREEN_SetHigh();//Turn off Green LED
-    BI_LED_RED_SetLow();//Turn on Red LED
+    LedStateRestore(ledWas);
     return(warning);
 }
 
 uint8_t GetAccel(void)
 {
     uint8_t warning;
+    uint8_t ledWas;
     warning=0;
 
-
+    ledWas = LedStateSave();
 
     BI_LED_GREEN_SetLow();//Turn off Green LED
     BI_LED_RED_SetHigh();//Turn on Red LED
     if(QuickAcellerometerGrabber())   //returns any non zero for warning
         warning=GateInvalidOrientation;
-    BI_LED_GREEN_SetHigh();//Turn off Green LED
-    BI_LED_RED_SetLow();//Turn on Red LED
+    LedStateRestore(ledWas);
     return(warning);
 }
 
@@ -1303,12 +973,12 @@ void HandleTaskWarning(uint16_t code)
 
     if (code & GateMoving)              /* Gate picked up; lasers off until orientation settles */
     {
-        AllLightsOff();
+        //AllLightsOff();
     }
 
     if (code & GateInvalidOrientation)  /* Tilt greater than TBD X degrees */
     {
-        AllLightsOff();
+        //AllLightsOff();
     }
 }
     
@@ -1318,105 +988,53 @@ void HandleTaskWarning(uint16_t code)
 
 void AllPowerDown (void)
 {
-    uint8_t HoldOffms;
-    HoldOffms = 0;
-    uint16_t SecondsCount;
-    uint16_t OffTime;
-    uint16_t OnTime;
-    
+    /* The application's part: lasers and lighting off. The countdown, the
+     * rails and the still-powered failsafe are shared with RGS_BringUp - see
+     * power_control.c. Never returns. */
     AllLightsOff();
-   
-     BI_LED_RED_SetHigh();
-     BI_LED_GREEN_SetLow();
-  //Wait 1 minute with fancy flickering RED LED then do the actual power down   
-    for (SecondsCount=0;SecondsCount<60;SecondsCount++)
-    {
-        OffTime=SecondsCount;
-        OffTime=SecondsCount*10;
-        OnTime=1000-OffTime;
-        
-       BI_LED_RED_SetHigh();
-       ClrWdt();
-       __delay_ms(OnTime);
-       BI_LED_RED_SetLow();
-       ClrWdt();
-       __delay_ms(OffTime);  
-    }
-          
-   //This is the actual power down
-        JETSON_5V_ON_SetLow();
-        HOLD_PWR_SetLow();
-
-        // Give the external power-latch hardware time to actually cut supply
-        // before we reset. Without this delay, if the latch hasn't dropped
-        // power yet, the MCU reboots while still powered (going through the
-        // bootloader) with the button often still held, which re-latches
-        // power straight back on instead of turning off.
-        
-    //Below: looks a bit overcomplicated now power path behaving ok!  
-        // just a simple infinite loop clearing the watchdog should be fine now?
-        while(1)
-        {
-            
-            ClrWdt();
-            __delay_ms(50);
-           
-            HoldOffms++;
-            if(HoldOffms >=300)//if this happens, the power has not gone down
-            {
-                
-              RCONbits.EXTR = 1;
-              RCONbits.POR=1;
-              RCONbits.BOR=1;
-              asm("reset");  
-            }
-        }
-    
+    PWR_ShutdownCountdownAndOff();
 }
 
 void AllLightsOn (void)
 {
-    FRONT_LASER_PWM_SetLow();
-    REAR_LASER_PWM_SetLow();
-    BEAM_SetLow();
-    EMULATE_EEPROM_Memory[LaserStateAddr]=7;
+    EMULATE_EEPROM_Memory[LaserStateAddr] &= (uint8_t)~LaserState_LampsOff;
+    LampsApply(LaserState_LampsMask);   // all three - refused if locked out
     RestoreDetect();
 }
 
 void AllLightsOff (void)
-{   
-    
+{
+
     FrontSensorOff;
     RearSensorOff;
-    if(EMULATE_EEPROM_Memory[LaserStateAddr]!=0)
-       CopyLightState= EMULATE_EEPROM_Memory[LaserStateAddr]; //back up the current lighting state. but don't accidentally make it zero if this has already been called
-    
-    EMULATE_EEPROM_Memory[LaserStateAddr]=0;
-    FRONT_LASER_PWM_SetHigh();
-    REAR_LASER_PWM_SetHigh();
-    BEAM_SetHigh();
+    EMULATE_EEPROM_Memory[LaserStateAddr] |= LaserState_LampsOff;
+    LampsApply(0);               // always permitted, lockout or not
 }
 
-void AllLightsRestore(void) //puts the lights back as we found them 
+/* Puts the lights back ON after an excursion - unconditionally.
+ *
+ * It used to drive each lamp from bits 0-2 of LaserState, but nothing in this
+ * application ever SETS those bits: the only writer is SetLasers() in
+ * job_queue.c, which runs on a Jetson write to address 128. On a unit the
+ * Jetson had not configured lighting for, the bits read zero and "restore"
+ * switched everything off - the ball-detect beam went out on the first tilt and
+ * never came back.
+ *
+ * "All on" is the default this gate wants, so restore now simply does that.
+ * The trade is deliberate: lighting the Jetson had turned off before an
+ * excursion comes back on when the gate returns to level. */
+void AllLightsRestore(void)
 {
-    
-     if (CopyLightState&0x01)
-      FRONT_LASER_PWM_SetLow();
-  else
-      FRONT_LASER_PWM_SetHigh();
-  
-  if (CopyLightState&0x02)
-      REAR_LASER_PWM_SetLow();
-  else
-      REAR_LASER_PWM_SetHigh();
-  
-   if (CopyLightState&0x04)
-      BEAM_SetLow();
-  else
-      BEAM_SetHigh();
-     
-   EMULATE_EEPROM_Memory[LaserStateAddr]=CopyLightState; 
-   RestoreDetect();
+    /* DEFERRED, not discarded. Re-applies the REQUEST in ConfigLasersAddr, so
+     * the gate returns either to the state it was in before the excursion or to
+     * whatever the Jetson asked for WHILE it was out of level - a request
+     * LampsApply() refused at the time but left recorded in that byte.
+     *
+     * The caller must have cleared LaserState_OrientFault already, or
+     * LampsApply() will refuse this too. The orientation check does. */
+    EMULATE_EEPROM_Memory[LaserStateAddr] &= (uint8_t)~LaserState_LampsOff;
+    LampsApply(EMULATE_EEPROM_Memory[ConfigLasersAddr]);
+    RestoreDetect();
 }
 
 void WarnCodeToJetson(uint16_t WarnCode)

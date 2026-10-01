@@ -103,6 +103,10 @@ void PIN_MANAGER_Initialize (void)
      ***************************************************************************/
     CNPU1 = 0x0000;
     CNPU2 = 0x0400;
+    /* Pull-up on the power button (RB10 = CN16), as both applications set it.
+     * Without it the button input floats here unless the board fits an
+     * external pull-up - and the bootloader reads that input to power off. */
+    CNPU2bits.CN16PUE = 1;
 
     /****************************************************************************
      * Setting the Open Drain SFR(s)

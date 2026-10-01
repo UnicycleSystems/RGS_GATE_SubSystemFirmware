@@ -40,7 +40,7 @@ extern "C" {
 // 'Hard coded' parameters that are used by the subsystem build, 
 // to be  checked/ updated on any release
 //These are not, in this form, directly used by the 
-#define   TableVersion 2   //Version 2 - added power handling and jetson calls/alerts
+#define   TableVersion 3   //Version 3 - added power handling and jetson calls/alerts,aliases for some internals
  // -------   *****  Please do read this. It's not hard. ***********  
  //---------------------!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!-----------------------
  // 
@@ -155,6 +155,10 @@ extern "C" {
 #define BatteryPackVoltage_Addr (BatteryChargeState_Addr + BatteryChargeStateNumBytes )  //in mv, 0-65535
 #define BatteryPackVoltageNumBytes 2
 #define BattVoltReadAddr  (BatteryPackVoltage_Addr)   //!client side read address alias
+    
+
+    
+    
 
     
   
@@ -198,9 +202,11 @@ extern "C" {
 
 
 //Laser (and other lights    - a bit field for all the lighting - TODO: best document that here
-#define LaserStateAddr (TicksPerSecondAddr - TicksPerSecondNumBytes)  
-#define LaserStateNumBytes 1 
-    
+#define LaserStateAddr (TicksPerSecondAddr - TicksPerSecondNumBytes)
+#define LaserStateNumBytes 1
+
+
+
 #define LaserStateReadAddr  (LaserStateAddr)     //!! client side read address alias
     
     
@@ -229,6 +235,9 @@ extern "C" {
 #define CallJetsonCode_LSB ( CallJetsonCode_Addr  - 1 )  
     
 #define CallJetsCodeReadAddr   (CallJetsonCode_LSB)     //! Client side read Address  alias 
+    
+#define PowerOffFlag  (CallJetsonCode_Addr -  CallJetsonCode_NumBytes )  // this may be used to trigger other things, but currently just launch a power off up the command chain
+#define PowerOffFlag_NumBytes 1
    
 /// *********  END of READ ONLY TABLES   *************************
 // **                                                           **
@@ -316,8 +325,35 @@ extern "C" {
 //Codes when the Jetson is calling the subsys -- 
 #define Nothing  0   // jetson must have pocket dialled, nothing to do         
 #define JetsonIsShuttingDown 1   // jetson is shutting from gui or other cause, Subsytem to power down in 1 minute please
+#define InitReset   0x56
+#define InitPowerOff 0x23
+#define ConfirmReset_PowerOff  0x2F
 
  
+ 
+    
+    
+//other defines for internal use only - not needed by any external code
+    
+#define ImmediatePowerOff 0x67   // used in a specific read,ie  EMULATE_EEPROM_Memory[PowerOffFlag]=ImmediatePowerOff will pass a power off command up the chain
+#define InitResetCheck   0x41        // internally sets a location to this to validate reset request
+#define InitPowerOffCheck  0x42     // internally sets a location to this to validate power off request
+// Bit within LaserState that is NOT a lamp: it latches "the lights have already
+// been switched off because the gate is out of level", so the orientation check
+// does that work once instead of on every pass. It is also a LOCKOUT: while it
+// is set LampsApply() forces every lamp off, so nothing - not even a Jetson
+// write to ConfigLasersAddr - can light them until the gate is level again.
+#define LaserState_OrientFault 0x40
+
+// The lamp bits themselves, within LaserState: 0 front laser, 1 rear laser,
+// 2 beam. LampsApply() writes ONLY these, so the flags above survive. They
+// report what is ACTUALLY lit; ConfigLasersAddr holds what was REQUESTED.
+#define LaserState_LampsMask 0x07
+
+// Latches "the lamps were switched off" - by a tilt, or a power-down.
+#define LaserState_LampsOff 0x80
+    
+   
 
 #ifdef	__cplusplus
 }

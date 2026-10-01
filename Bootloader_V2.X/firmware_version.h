@@ -4,7 +4,7 @@
 
 
 #define FIRMWARE_REV_MSB        3
-#define FIRMWARE_REV_LSB        2
+#define FIRMWARE_REV_LSB        4
 
 
 

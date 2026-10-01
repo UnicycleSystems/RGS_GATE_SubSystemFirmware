@@ -40,6 +40,7 @@
       <itemPath>../CommonFiles/header/pitchandroll.h</itemPath>
       <itemPath>../CommonFiles/header/i2c2_helpers.h</itemPath>
       <itemPath>../CommonFiles/header/lis2dw12_i2c2.h</itemPath>
+      <itemPath>../CommonFiles/header/power_control.h</itemPath>
       <itemPath>InitEEpromVals.h</itemPath>
       <itemPath>../CommonFiles/header/ArrayUtils.h</itemPath>
     </logicalFolder>
@@ -110,6 +111,7 @@
       <itemPath>../CommonFiles/source/ArrayUtils.c</itemPath>
       <itemPath>../CommonFiles/source/i2c2_helpers.c</itemPath>
       <itemPath>../CommonFiles/source/lis2dw12_i2c2.c</itemPath>
+      <itemPath>../CommonFiles/source/power_control.c</itemPath>
     </logicalFolder>
   </logicalFolder>
   <sourceRootList>
@@ -125,7 +127,7 @@
         <targetDevice>PIC24FJ64GA004</targetDevice>
         <targetHeader></targetHeader>
         <targetPluginBoard></targetPluginBoard>
-        <platformTool>ICD4Tool</platformTool>
+        <platformTool>pk4hybrid</platformTool>
         <languageToolchain>XC16</languageToolchain>
         <languageToolchainVersion>2.10</languageToolchainVersion>
         <platform>3</platform>
