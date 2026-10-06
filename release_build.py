@@ -197,13 +197,19 @@ def publish(src, dest_dir, filename):
     If a file of the SAME NAME is already there, stop the whole release. That
     means a build was cut without the version being changed, and quietly
     replacing it would leave two different images that cannot be told apart -
-    which has already cost this project a day of confusion. Any OTHER contents
-    are deleted: the directory answers "which image?" and must not offer a
-    choice.
+    which has already cost this project a day of confusion. Any OTHER .hex is
+    deleted: the directory answers "which image?" and must not offer a choice.
+
+    ONLY .hex files are touched. These directories also hold the host tooling
+    that loads the image - rgs_bootload_BringUp.py, picprog.py, the settings
+    file - and that tooling reads the hex from the directory it lives beside.
+    Sweeping the directory clean would delete the very scripts that use it,
+    silently, in the middle of a release.
     """
     os.makedirs(dest_dir, exist_ok=True)
     existing = [f for f in os.listdir(dest_dir)
-                if os.path.isfile(os.path.join(dest_dir, f))]
+                if os.path.isfile(os.path.join(dest_dir, f))
+                and f.lower().endswith(".hex")]
 
     if filename in existing:
         raise ReleaseError(

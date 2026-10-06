@@ -8,7 +8,7 @@
 #define FIRMWARE_REV_MINOR      0
 
 
-#define ReleaseCandidate 1
+#define ReleaseCandidate 0
 
 
 
