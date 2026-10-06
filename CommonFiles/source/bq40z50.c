@@ -380,6 +380,43 @@ static BQ_STATUS bq_df_write_word(uint16_t address, uint16_t value)
     return BQ_OK;
 }
 
+/* 32-bit data flash, for the F4 (IEEE754 single, little endian - TRM 15.1.3)
+ * calibration gains. Handled as a RAW BIT PATTERN throughout: nothing here does
+ * float arithmetic, which keeps the float library out of the image and makes
+ * the plausibility test below exact. */
+static BQ_STATUS bq_df_read_u32(uint16_t address, uint32_t *value)
+{
+    uint8_t buf[32];
+    uint8_t len = 0;
+    BQ_STATUS st = bq_mac_block_read(address, buf, sizeof(buf), &len);
+
+    if (st != BQ_OK)
+        return st;
+    if (len < 4)
+        return BQ_ERR_I2C;
+    *value =  (uint32_t)buf[0]
+           | ((uint32_t)buf[1] << 8)
+           | ((uint32_t)buf[2] << 16)
+           | ((uint32_t)buf[3] << 24);
+    return BQ_OK;
+}
+
+static BQ_STATUS bq_df_write_u32(uint16_t address, uint32_t value)
+{
+    uint8_t payload[6];
+
+    payload[0] = (uint8_t)(address & 0xFF);
+    payload[1] = (uint8_t)(address >> 8);
+    payload[2] = (uint8_t)(value & 0xFF);
+    payload[3] = (uint8_t)((value >> 8) & 0xFF);
+    payload[4] = (uint8_t)((value >> 16) & 0xFF);
+    payload[5] = (uint8_t)((value >> 24) & 0xFF);
+    if (!bq_mac_block_write(payload, 6))
+        return BQ_ERR_I2C;
+    bq_delay_ms(BQ_T_DF_WRITE_MS);
+    return BQ_OK;
+}
+
 /* ---------------- UART1 report helpers ---------------- */
 
 /* UART1_Write() spins on a full TX buffer without clearing the watchdog,
@@ -1000,12 +1037,58 @@ static const bq_golden_entry_t bq_golden[] =
       BQ_PACK_DESIGN_CAPACITY_CWH,                  "Design Cap cWh" },
     { BQ_DF_DESIGN_VOLTAGE,      2, BQ_GF_SKIP_IF_ZERO,
       BQ_PACK_DESIGN_VOLTAGE_MV,                    "Design Voltage" },
+
+    /* ---- Gauging limits ----
+     * Term Voltage is where the gauge calls 0%. TI's 9000 mV default is
+     * 2.25 V per cell, below the cell's rated minimum, so a learning cycle run
+     * against it would discharge the cells past where they should ever go AND
+     * teach the gauge an empty point the product never uses. */
+    { BQ_DF_TERM_VOLTAGE,        2, 0,
+      BQ_PACK_TERM_VOLTAGE_MV,                      "Term Voltage"   },
+    { BQ_DF_QUIT_CURRENT,        2, 0,
+      BQ_PACK_QUIT_CURRENT_MA,                      "Quit Current"   },
+
+    /* ---- Cell protections, from the cell datasheet ----
+     * COV has FIVE temperature bands and the pack is only protected when every
+     * one is set - the fifth, Rec Temp, is the one that gets forgotten. */
+    { BQ_DF_CUV_THRESHOLD,       2, 0, BQ_PACK_CUV_MV, "CUV Thresh"   },
+    { BQ_DF_COV_THR_LOW_TEMP,    2, 0, BQ_PACK_COV_MV, "COV LowT"     },
+    { BQ_DF_COV_THR_STD_LOW,     2, 0, BQ_PACK_COV_MV, "COV StdLowT"  },
+    { BQ_DF_COV_THR_STD_HIGH,    2, 0, BQ_PACK_COV_MV, "COV StdHighT" },
+    { BQ_DF_COV_THR_HIGH_TEMP,   2, 0, BQ_PACK_COV_MV, "COV HighT"    },
+    { BQ_DF_COV_THR_REC_TEMP,    2, 0, BQ_PACK_COV_MV, "COV RecT"     },
+
+    /* Discharge limits are NEGATIVE, stored two's complement in 16 bits.
+     * -1500 is 0xFA24, -2500 is 0xF63C; the read-back compares as uint16 so
+     * the cast here and the comparison in bq_golden_verify() agree. */
+    { BQ_DF_OCC1_THRESHOLD,      2, 0,
+      (uint16_t)BQ_PACK_OCC1_MA,                    "OCC1 Thresh"    },
+    { BQ_DF_OCC2_THRESHOLD,      2, 0,
+      (uint16_t)BQ_PACK_OCC2_MA,                    "OCC2 Thresh"    },
+    { BQ_DF_OCD1_THRESHOLD,      2, 0,
+      (uint16_t)BQ_PACK_OCD1_MA,                    "OCD1 Thresh"    },
+    { BQ_DF_OCD2_THRESHOLD,      2, 0,
+      (uint16_t)BQ_PACK_OCD2_MA,                    "OCD2 Thresh"    },
+
+    /* Temperatures in 0.1 K. Only OTC and UTD need changing; OTD and UTC
+     * already match the datasheet at TI's defaults. */
+    { BQ_DF_OTC_THRESHOLD,       2, 0,
+      BQ_DEGC_TO_01K(BQ_PACK_OTC_THRESHOLD_C),      "OTC Thresh"     },
+    { BQ_DF_OTC_RECOVERY,        2, 0,
+      BQ_DEGC_TO_01K(BQ_PACK_OTC_RECOVERY_C),       "OTC Recovery"   },
+    { BQ_DF_UTD_THRESHOLD,       2, 0,
+      BQ_DEGC_TO_01K(BQ_PACK_UTD_THRESHOLD_C),      "UTD Thresh"     },
+    { BQ_DF_UTD_RECOVERY,        2, 0,
+      BQ_DEGC_TO_01K(BQ_PACK_UTD_RECOVERY_C),       "UTD Recovery"   },
 };
 
 #define BQ_GOLDEN_COUNT  (sizeof(bq_golden) / sizeof(bq_golden[0]))
 
 volatile uint8_t bq_dbg_golden_mismatch;
 volatile uint8_t bq_dbg_golden_unset;
+
+static BQ_STATUS bq_seed_qmax_if_default(void);        /* defined below Apply */
+static BQ_STATUS bq_repair_gain_if_implausible(void);  /* ditto              */
 
 static BQ_STATUS bq_golden_read(const bq_golden_entry_t *e, uint16_t *actual)
 {
@@ -1090,6 +1173,178 @@ BQ_STATUS BQ40Z50_ApplyGoldenImage(void)
         else if (actual != e->value && worst == BQ_OK)
             worst = BQ_ERR_DF_VERIFY;
     }
+
+    /* Both of these are CONDITIONAL, which is why neither is a table entry. */
+    st = bq_repair_gain_if_implausible();
+    if (st != BQ_OK && worst == BQ_OK)
+        worst = st;
+
+    st = bq_seed_qmax_if_default();
+    if (st != BQ_OK && worst == BQ_OK)
+        worst = st;
+
+    return worst;
+}
+
+/* Repair the current-sense gain, but ONLY when what is stored cannot be real.
+ *
+ * This is deliberately a repair rather than a golden-image entry. The gain is
+ * per-unit calibration: a pack that has been properly calibrated against its
+ * own board must not have that overwritten with a nominal figure every time an
+ * operator runs menu 1. But a pack carrying a corrupted gain is dangerous in a
+ * quiet way - the gauge reads current wrong by whatever factor, so FCC and SoC
+ * are meaningless, charge terminates at the wrong point, and the over-current
+ * protections fire on loads that are nowhere near their thresholds.
+ *
+ * We produced three such values in two days of bench work (0.090, 0.175 and
+ * infinity, all from calibration runs where the current collapsed mid-measure),
+ * each of which left a pack that would not charge and tripped on a 0.6 A load.
+ * So the jig repairs them.
+ *
+ * The test is a plain unsigned comparison of the IEEE754 bit pattern - positive
+ * floats sort correctly as integers - which costs no float library and catches
+ * zero, NaN, infinity and negatives along with the merely wrong. Anything
+ * between 1 and 20 mOhm is left strictly alone.
+ */
+/* Write BOTH current-sense gains to the nominal, unconditionally.
+ *
+ * Separate from the repair, which only fires on garbage: this is the operator
+ * saying "this board's sense path is the nominal one, use it". Needed because
+ * the gain is the one value that cannot be fixed from the jig any other way -
+ * it is not in bq_golden[], and a gain that is wrong but not absurd (3.58 where
+ * the path is 11.38) is left alone by design.
+ *
+ * Both gains are written together and always: CC Gain scales the current
+ * reading, Capacity Gain the coulomb count, and a pack with one right and the
+ * other wrong reports sensible current alongside nonsense capacity - which is
+ * exactly what was found on 2026-10-05, Capacity Gain holding 1,069,035 mOhm.
+ */
+BQ_STATUS BQ40Z50_SetSenseGain(void)
+{
+    static const uint16_t gain_addr[] = { BQ_DF_CC_GAIN, BQ_DF_CAPACITY_GAIN };
+    static const char *const gain_name[] = { "CC Gain", "Capacity Gain" };
+    uint8_t  i;
+    uint32_t actual;
+    BQ_STATUS st, worst = BQ_OK;
+
+    for (i = 0; i < 2u; i++)
+    {
+        st = bq_df_write_u32(gain_addr[i], BQ_GAIN_NOMINAL_BITS);
+        if (st != BQ_OK)
+        {
+            if (worst == BQ_OK) worst = st;
+            bq_print("  ");
+            bq_print(gain_name[i]);
+            bq_print_line(": WRITE FAILED");
+            continue;
+        }
+
+        /* Read back - a silent refusal is the failure that matters, and these
+         * writes need FULL ACCESS, which a reset or power cycle takes away. */
+        bq_print("  ");
+        bq_print(gain_name[i]);
+        bq_print(": ");
+        if (bq_df_read_u32(gain_addr[i], &actual) != BQ_OK)
+            bq_print_line("read back FAILED");
+        else
+        {
+            bq_print_hex(actual, 8);
+            if (actual == BQ_GAIN_NOMINAL_BITS)
+                bq_print_line("  ok");
+            else
+            {
+                bq_print_line("  ** DID NOT TAKE - check FULL ACCESS **");
+                if (worst == BQ_OK) worst = BQ_ERR_DF_VERIFY;
+            }
+        }
+    }
+
+    return worst;
+}
+
+static BQ_STATUS bq_repair_gain_if_implausible(void)
+{
+    static const uint16_t gain_addr[] = { BQ_DF_CC_GAIN, BQ_DF_CAPACITY_GAIN };
+    static const char *const gain_name[] = { "CC Gain", "Capacity Gain" };
+    uint8_t  i;
+    uint32_t actual;
+    BQ_STATUS st, worst = BQ_OK;
+
+    for (i = 0; i < (uint8_t)(sizeof(gain_addr) / sizeof(gain_addr[0])); i++)
+    {
+        st = bq_df_read_u32(gain_addr[i], &actual);
+        if (st != BQ_OK)
+        {
+            if (worst == BQ_OK) worst = st;
+            continue;
+        }
+
+        if (actual >= BQ_GAIN_MIN_BITS && actual <= BQ_GAIN_MAX_BITS)
+            continue;                   /* plausible - leave the calibration */
+
+        bq_print("  ** ");
+        bq_print(gain_name[i]);
+        bq_print(" implausible (");
+        bq_print_hex(actual, 8);     /* prints its own 0x prefix */
+        bq_print_line(") - restoring nominal **");
+
+        st = bq_df_write_u32(gain_addr[i], BQ_GAIN_NOMINAL_BITS);
+        if (st != BQ_OK && worst == BQ_OK)
+            worst = st;
+    }
+
+    return worst;
+}
+
+/* Seed Qmax to Design Capacity, but ONLY on a pack that still carries TI's
+ * 4400 mAh factory value.
+ *
+ * This is deliberately NOT a bq_golden[] entry, and the distinction matters.
+ * Every entry in that table is written whenever it does not match, which is
+ * right for configuration - and catastrophic for Qmax. Qmax is LEARNED: a pack
+ * that has completed a characterisation cycle might hold 2350, which the table
+ * would treat as "wrong" and overwrite with 2400, destroying a day's work
+ * silently, every time the operator ran menu 1.
+ *
+ * So the test is "is this still the factory default", not "does this match".
+ * A pack that has learned anything at all is left alone.
+ *
+ * Why seed at all: TI ships 4400 mAh against a real 2400. That is an 80%
+ * overestimate, far outside Qmax Delta (5%) and Qmax Upper Bound (130%), so the
+ * gauge may reject its own first measurement rather than converge on it. It
+ * also makes state-of-charge nonsense in the meantime - a pack that never reads
+ * above about 55% - which is exactly what a tester would report as "the battery
+ * never charges fully".
+ */
+static BQ_STATUS bq_seed_qmax_if_default(void)
+{
+    static const uint16_t qmax_addr[] =
+    {
+        BQ_DF_QMAX_CELL1, BQ_DF_QMAX_CELL2,
+        BQ_DF_QMAX_CELL3, BQ_DF_QMAX_CELL4,
+        BQ_DF_QMAX_PACK
+    };
+    uint8_t  i;
+    uint16_t actual;
+    BQ_STATUS st, worst = BQ_OK;
+
+    for (i = 0; i < (uint8_t)(sizeof(qmax_addr) / sizeof(qmax_addr[0])); i++)
+    {
+        st = bq_df_read_word(qmax_addr[i], &actual);
+        if (st != BQ_OK)
+        {
+            if (worst == BQ_OK) worst = st;
+            continue;
+        }
+
+        if (actual != BQ_QMAX_FACTORY_DEFAULT)
+            continue;               /* learned, or already seeded - leave it */
+
+        st = bq_df_write_word(qmax_addr[i], BQ_PACK_DESIGN_CAPACITY_MAH);
+        if (st != BQ_OK && worst == BQ_OK)
+            worst = st;
+    }
+
     return worst;
 }
 
@@ -1550,6 +1805,74 @@ void BQ40Z50_ReportStatus(void)
             else
                 bq_print_fail();
         }
+
+        /* GaugingStatus. Read the same way and for the same reason as
+         * ChargingStatus above - three bytes, not four.
+         *
+         * QEN is the headline: with Impedance Track disabled the gauge learns
+         * NOTHING, so a 24-hour characterisation cycle is wasted before it
+         * starts. It is called out separately because the rest of the flags
+         * are only meaningful once it is set. Note QEN is NOT the same as
+         * GAUGE_EN in ManufacturingStatus - a pack can have one without the
+         * other, which is exactly how a pack ends up reporting 0 mAh FCC.
+         *
+         * The remaining flags are the learning-cycle progress markers, and
+         * they are the practical way to watch a cycle: REST and VOK after a
+         * relaxation, VDQ through the discharge, EDV at the bottom. */
+        bq_print("  Gauging   : ");
+        {
+            static const struct { uint32_t mask; const char *name; } gflags[] =
+            {
+                { BQ_GAUGE_QEN,    "QEN"   }, { BQ_GAUGE_VOK,   "VOK"   },
+                { BQ_GAUGE_REST,   "REST"  }, { BQ_GAUGE_VDQ,   "VDQ"   },
+                { BQ_GAUGE_EDV,    "EDV"   }, { BQ_GAUGE_CF,    "CF"    },
+                { BQ_GAUGE_DSG,    "DSG"   }, { BQ_GAUGE_FC,    "FC"    },
+                { BQ_GAUGE_FD,     "FD"    }, { BQ_GAUGE_TC,    "TC"    },
+                { BQ_GAUGE_TD,     "TD"    }, { BQ_GAUGE_BAL_EN,"BAL_EN"},
+                { BQ_GAUGE_R_DIS,  "R_DIS" }, { BQ_GAUGE_QMAX,  "QMAX"  },
+                { BQ_GAUGE_RX,     "RX"    }, { BQ_GAUGE_OCVFR, "OCVFR" },
+                { BQ_GAUGE_NSFM,   "NSFM"  }, { BQ_GAUGE_LDMD,  "LDMD"  },
+                { BQ_GAUGE_SLPQMAX,"SLPQMAX" },
+            };
+            uint8_t buf[8];
+            uint8_t n = 0;
+
+            if (bq_mac_block_read(BQ_MAC_GAUGING_STATUS, buf, sizeof(buf), &n)
+                    == BQ_OK && n > 0u)
+            {
+                uint8_t i;
+                uint32_t gs = 0;
+                bool first = true;
+
+                for (i = 0; i < n && i < 4u; i++)
+                    gs |= ((uint32_t)buf[i]) << (8u * i);
+
+                bq_print_hex(gs, (uint8_t)((n < 4u ? n : 4u) * 2u));
+
+                bq_print("  [");
+                for (i = 0; i < (uint8_t)(sizeof(gflags) / sizeof(gflags[0])); i++)
+                {
+                    if (gs & gflags[i].mask)
+                    {
+                        if (!first)
+                            bq_print(", ");
+                        bq_print(gflags[i].name);
+                        first = false;
+                    }
+                }
+                if (first)
+                    bq_print("none");
+                bq_print("]");
+
+                if (!(gs & BQ_GAUGE_QEN))
+                    bq_print("  ** IMPEDANCE TRACK DISABLED - WILL NOT LEARN **");
+                if (gs & BQ_GAUGE_R_DIS)
+                    bq_print("  ** Ra UPDATES DISABLED **");
+                bq_print_line("");
+            }
+            else
+                bq_print_fail();
+        }
     }
 
     bq_print("  Temp      : ");
@@ -1588,6 +1911,62 @@ void BQ40Z50_ReportStatus(void)
     }
     else
         { bq_print("  Cells     : "); bq_print_fail(); }
+
+    /* The current-sense gains, as raw IEEE754 bit patterns.
+     *
+     * Printed as hex rather than decoded, because printing a float costs the
+     * whole formatting library for one line - and hex is enough to answer the
+     * question that matters. The nominal value is 0x408BCED9 (4.369 mOhm); a
+     * pattern that looks nothing like it is the thing to notice.
+     *
+     * Worth having on this page at all because a wrong gain is invisible in
+     * every other reading and explains a startling range of symptoms: capacity
+     * and SoC nonsense, charge terminating the instant it starts, and
+     * over-current protections firing on loads nowhere near their thresholds.
+     * We have now seen four corrupted gains on two packs.
+     *
+     * THREE verdicts, because two are not enough:
+     *
+     *   near nominal  3.9 - 4.8 mOhm, around the figure measured on one board.
+     *                 Treat as indicative: another board measured ~11.4 mOhm,
+     *                 so "not nominal" does NOT mean wrong.
+     *   NOT NOMINAL   inside the repair band but away from that figure. Menu 1
+     *                 leaves it alone - it could be a correct calibration on a
+     *                 board with a different shunt. Compare the reported
+     *                 current against a meter IN SERIES WITH THE PACK before
+     *                 concluding anything.
+     *   IMPLAUSIBLE   outside 0.5 - 20 mOhm: cannot be a calibration at all,
+     *                 and menu 1 repairs it. */
+    {
+        static const uint16_t gain_addr[] =
+            { BQ_DF_CC_GAIN, BQ_DF_CAPACITY_GAIN };
+        static const char *const gain_label[] =
+            { "  CC Gain   : ", "  Cap Gain  : " };
+        uint8_t  g;
+        uint32_t bits;
+
+        for (g = 0; g < 2u; g++)
+        {
+            bq_print(gain_label[g]);
+            if (bq_df_read_u32(gain_addr[g], &bits) == BQ_OK)
+            {
+                bq_print_hex(bits, 8);
+                if (bits < BQ_GAIN_MIN_BITS || bits > BQ_GAIN_MAX_BITS)
+                    bq_print_line("  ** IMPLAUSIBLE - run menu 1 to repair **");
+                else if (bits >= BQ_GAIN_NEAR_MIN_BITS
+                      && bits <= BQ_GAIN_NEAR_MAX_BITS)
+                    bq_print_line("  ok (near nominal)");
+                else
+                    bq_print_line("  ** NOT NOMINAL - currents may be scaled "
+                                  "wrong; menu 1 will NOT repair this **");
+            }
+            else
+                bq_print_fail();
+        }
+        bq_print("  nominal     : ");
+        bq_print_hex(BQ_GAIN_NOMINAL_BITS, 8);
+        bq_print_line("  (menu 9 writes this)");
+    }
 
     /* Non-zero means the bus wedged and had to be reset - worth knowing even
      * when every read above succeeded, since it is the early warning. */

@@ -66,6 +66,41 @@
 #define BQ_CHG_STL   0x000004ul   /* standard temperature low          */
 #define BQ_CHG_LT    0x000002ul   /* low temperature                   */
 #define BQ_CHG_UT    0x000001ul   /* under temperature                 */
+#define BQ_MAC_GAUGING_STATUS     0x0056  /* WHETHER the gauge is learning at
+                                           * all, and how far it has got. */
+
+/* GaugingStatus (MAC 0x0056) flags. THREE bytes, like ChargingStatus.
+ * Bit map from the BQ40Z50-R2 TRM, SLUUBK0B section 14.1.42.
+ * Bits 23-21 and bits 14, 9 are reserved.
+ *
+ * QEN is the one that decides whether a learning cycle is worth running at all:
+ * with it clear, Impedance Track is off and NEITHER Qmax NOR Ra will update,
+ * however perfectly the cycle is performed. Note it is NOT the same thing as
+ * GAUGE_EN in ManufacturingStatus.
+ *
+ * The rest are the progress markers through a learning cycle, in the order they
+ * should appear: REST and VOK after a relaxation, VDQ through the discharge,
+ * EDV at the bottom, then the QMAX and RX toggles when the updates land. */
+#define BQ_GAUGE_OCVFR  0x100000ul  /* OCV in flat region during RELAX     */
+#define BQ_GAUGE_LDMD   0x080000ul  /* load mode: 1 = constant power       */
+#define BQ_GAUGE_RX     0x040000ul  /* toggles after every Ra update       */
+#define BQ_GAUGE_QMAX   0x020000ul  /* toggles after every Qmax update     */
+#define BQ_GAUGE_VDQ    0x010000ul  /* discharge qualified for learning    */
+#define BQ_GAUGE_NSFM   0x008000ul  /* negative Ra scaling factor          */
+#define BQ_GAUGE_SLPQMAX 0x002000ul /* OCV update in SLEEP in progress     */
+#define BQ_GAUGE_QEN    0x001000ul  /* IMPEDANCE TRACK ENABLED             */
+#define BQ_GAUGE_VOK    0x000800ul  /* voltages OK - a DOD was saved       */
+#define BQ_GAUGE_R_DIS  0x000400ul  /* 1 = resistance updates DISABLED     */
+#define BQ_GAUGE_REST   0x000100ul  /* OCV reading taken during RELAX      */
+#define BQ_GAUGE_CF     0x000080ul  /* MaxError too high - cycle needed    */
+#define BQ_GAUGE_DSG    0x000040ul  /* 1 = charging NOT detected           */
+#define BQ_GAUGE_EDV    0x000020ul  /* termination voltage reached         */
+#define BQ_GAUGE_BAL_EN 0x000010ul  /* cell balancing permitted            */
+#define BQ_GAUGE_TC     0x000008ul  /* terminate charge                    */
+#define BQ_GAUGE_TD     0x000004ul  /* terminate discharge                 */
+#define BQ_GAUGE_FC     0x000002ul  /* fully charged                       */
+#define BQ_GAUGE_FD     0x000001ul  /* fully discharged                    */
+
 #define BQ_MAC_MANUFACTURING_STATUS 0x0057
 
 #define BQ_DEVICE_TYPE_EXPECTED   0x4500
@@ -170,6 +205,54 @@
 #define BQ_DF_DESIGN_CAPACITY_CWH 0x48E7  /* 2 bytes, centi-Wh */
 #define BQ_DF_DESIGN_VOLTAGE      0x48E9  /* 2 bytes, mV */
 
+/* Gauging and protection data flash. Addresses taken from SLUUBK0B Table 15-1,
+ * the Data Flash Table, which is the ONLY place in the TRM that carries
+ * addresses - the parameter descriptions in section 15.2 onwards do not.
+ *
+ * The seven addresses above were already in use and all seven match Table 15-1
+ * exactly, which is what gives confidence in the rest of this block.
+ *
+ * NOTE two addresses in the old comment further down were WRONG: it had OCC at
+ * 0x4964 (really inside the OCC2 group) and OCD at 0x496D (past OCD2). Both
+ * would have written to the wrong parameter. They are corrected here. */
+#define BQ_DF_TERM_VOLTAGE        0x484A  /* 2 bytes, mV - where 0% SoC is   */
+#define BQ_DF_QUIT_CURRENT        0x4A8D  /* 2 bytes, mA - relaxation entry  */
+
+#define BQ_DF_CUV_THRESHOLD       0x493C  /* 2 bytes, mV, per cell */
+#define BQ_DF_COV_THR_LOW_TEMP    0x4946  /* 2 bytes, mV - FIVE bands, and a */
+#define BQ_DF_COV_THR_STD_LOW     0x4948  /* pack is only protected when all */
+#define BQ_DF_COV_THR_STD_HIGH    0x494A  /* five are set. Easy to miss the  */
+#define BQ_DF_COV_THR_HIGH_TEMP   0x494C  /* last one.                       */
+#define BQ_DF_COV_THR_REC_TEMP    0x494E
+
+#define BQ_DF_OCC1_THRESHOLD      0x495E  /* 2 bytes, mA, positive */
+#define BQ_DF_OCC2_THRESHOLD      0x4961
+#define BQ_DF_OCD1_THRESHOLD      0x4967  /* 2 bytes, mA, NEGATIVE */
+#define BQ_DF_OCD2_THRESHOLD      0x496A
+
+#define BQ_DF_OTC_THRESHOLD       0x497F  /* 2 bytes, 0.1 K - see the note */
+#define BQ_DF_OTC_RECOVERY        0x4982  /* above about temperature units */
+#define BQ_DF_UTD_THRESHOLD       0x4993
+#define BQ_DF_UTD_RECOVERY        0x4996
+
+/* Gas Gauging / State. Qmax is DELIBERATELY not in bq_golden[] - see the
+ * seeding note in bq40z50.c. */
+#define BQ_DF_QMAX_CELL1          0x4306  /* 2 bytes each, mAh */
+#define BQ_DF_QMAX_CELL2          0x4308
+#define BQ_DF_QMAX_CELL3          0x430A
+#define BQ_DF_QMAX_CELL4          0x430C
+#define BQ_DF_QMAX_PACK           0x430E
+#define BQ_DF_UPDATE_STATUS       0x4312  /* 1 byte */
+
+/* Calibration gains. F4 = IEEE754 single, little endian (TRM 15.1.3), holding
+ * the sense resistance in mOhm. NOT in bq_golden[] - they are repaired rather
+ * than enforced; see bq_repair_gain_if_implausible(). */
+#define BQ_DF_CC_GAIN             0x4006  /* 4 bytes */
+#define BQ_DF_CAPACITY_GAIN       0x400A  /* 4 bytes */
+
+/* Temperatures are stored in 0.1 K. 2732 = 0 C, so 45 C is 3182. */
+#define BQ_DEGC_TO_01K(c)         ((uint16_t)(((int16_t)(c) * 10) + 2732))
+
 /* ===================================================================
  * PACK-SPECIFIC VALUES - SET THESE FOR THE RGS PACK
  * ===================================================================
@@ -181,27 +264,189 @@
  * running against the factory 4400 mAh default would report SOC that is
  * confidently wrong, which is worse than reporting none.
  *
- * cWh = capacity in centi-watt-hours = (mAh x Design Voltage mV) / 100000.
+ * cWh = capacity in centi-watt-hours = (mAh x Design Voltage mV) / 10000.
  * For 4 series cells, Design Voltage is nominal cell voltage x 4
  * (3600 mV x 4 = 14400 mV for typical Li-ion).
  */
 /* 4S1P: series cells raise voltage, not capacity, so pack capacity is the
  * single-cell figure. (If the pack is ever built with parallel pairs this
- * must double.) */
-#define BQ_PACK_DESIGN_CAPACITY_MAH   2500
+ * must double.)
+ *
+ * Cell: BAK N18650COP, spec P/PR03/PB-D-N18650COP-ZZ rev B/00 (2023-08-02).
+ *
+ * This is the cell's RATED capacity (2400 mAh), deliberately NOT its typical
+ * capacity (2500 mAh). Rated is the minimum a cell is guaranteed to deliver, so
+ * a pack built from weaker-but-in-spec cells can still reach 100%. Configured
+ * the other way round, the gauge promises capacity the cells may not have and
+ * reads short of full at the top of every charge.
+ *
+ * Changed from 2500 on 2026-10-02, BEFORE characterisation - this value is what
+ * state-of-charge is computed against, so changing it after a learning cycle
+ * invalidates the learning. */
+#define BQ_PACK_DESIGN_CAPACITY_MAH   2400
 
 /* ASSUMPTION: 3.6 V nominal per cell x 4 = 14400 mV, which is also TI's own
  * 4-series default. Change to 14800 if these cells are specified at 3.7 V
  * nominal - it shifts the energy figure below by ~3%. */
 #define BQ_PACK_DESIGN_VOLTAGE_MV     14400
 
-/* Energy = mAh x mV / 100000, in centi-watt-hours: 2500 x 14400 / 100000 */
-#define BQ_PACK_DESIGN_CAPACITY_CWH   360
+/* Energy in CENTI-watt-hours = mAh x mV / 10000: 2400 x 14400 / 10000 = 3456,
+ * i.e. 34.56 Wh.
+ *
+ * Cross-checks against the cell datasheet, which states rated energy as 8.64 Wh
+ * per cell: 4 x 8.64 = 34.56 Wh. That agreement is also what confirms the field
+ * really is centi-watt-hours.
+ *
+ * WAS 360, from dividing by 100000. Ten times low, and confirmed wrong against
+ * the part itself on 2026-10-02: bqStudio's Data Memory export of a provisioned
+ * pack reads
+ *
+ *   "Gas Gauging","Design","Design Capacity cWh","360","cWh"
+ *
+ * - TI's own units column says cWh, so 36 Wh is 3600. The parameter is named
+ * "Design Capacity cWh" in the tool, NOT "Design Energy".
+ *
+ * Every pack ApplyGoldenImage() touched before this was told it held 3.6 Wh.
+ * It matters whenever a host reads capacity in energy units rather than mAh -
+ * check Sbs Gauging Configuration (0x04 on the pack examined) for the CAPM
+ * bit, which selects exactly that. */
+#define BQ_PACK_DESIGN_CAPACITY_CWH   3456
 
-/* Protection thresholds (CUV 0x493C, COV 0x4946.., OCC 0x4964, OCD 0x496D,
- * OT/UT 0x4982..0x4996) are deliberately NOT in the golden image yet. TI's
- * defaults assume generic 4.2 V Li-ion; they must be set from the cell
- * datasheet before this jig is trusted to release packs. */
+/* ---- Protection and gauging limits, from the CELL datasheet ----
+ *
+ * Cell: BAK N18650COP, controlled spec P/PR03/PB-D-N18650COP-ZZ rev B/00.
+ * Derived and proven against a reference pack on 2026-10-02/05; the full
+ * reasoning is in bq40z50r2_goldenimages/PACK_PROVISIONING.md.
+ *
+ * These used to be left at TI's generic defaults, and those defaults were not
+ * merely imprecise - two of them were wrong in ways that matter:
+ *
+ *   COV 4300 mV  - ABOVE the cell's 4.25 V absolute ceiling (Uup), so the
+ *                  over-voltage protection could never engage in time.
+ *   UTD    0 C   - the cell discharges to -20 C. At 0 C the pack refuses to
+ *                  discharge in cold weather: an outdoor unit that will not
+ *                  switch on in winter.
+ *
+ * Note the datasheet has TWO voltage pairs and it is easy to take the wrong
+ * one. Ude 2.50 V and Ucl 4.20 V are the OPERATING limits; Udo 2.00 V and
+ * Uup 4.25 V are absolute never-exceed. Term Voltage follows the operating
+ * cut-off, the protections sit between the two. */
+#define BQ_PACK_TERM_VOLTAGE_MV      10000  /* 2.50 V x 4 - where 0% SoC is  */
+#define BQ_PACK_CUV_MV                2300  /* below Term V so it does not   */
+                                            /* trip during a learning cycle, */
+                                            /* 300 mV above the 2.00 V floor */
+#define BQ_PACK_COV_MV                4250  /* the 4.25 V absolute ceiling   */
+
+/* Sized to the PRODUCT, not the cell: the cell permits 6 A charge and 30 A
+ * discharge, which protects nothing on a unit that charges at 0.9 A and draws
+ * 0.6 A. These guard the wiring, FETs and traces. The default 6 s / 3 s delays
+ * are what make them safe this tight - a Jetson inrush lasting milliseconds
+ * cannot trip them, only a sustained fault can. */
+#define BQ_PACK_OCC1_MA               1500  /* ~1.5x the 0.9 A charger       */
+#define BQ_PACK_OCC2_MA               2000
+#define BQ_PACK_OCD1_MA              (-1500) /* ~2.5x the 0.6 A system draw  */
+#define BQ_PACK_OCD2_MA              (-2500)
+
+/* Using-temperature range from the controlled datasheet: charge 0 to 45 C,
+ * discharge -20 to 60 C. The marketing datasheet quotes 55 and 75 - those are
+ * the maximum SURFACE temperatures, not the operating range, and using them
+ * would permit charging 10 C above the cell's limit.
+ *
+ * Only OTC and UTD are set here; OTD 60 C and UTC 0 C already match the
+ * datasheet in TI's defaults.
+ *
+ * CAVEAT: with no thermistors fitted every one of these is measured by the
+ * gauge's INTERNAL die sensor, not the cells. During charge the cells run
+ * warmer than the PCB, so treat these as a proxy with an unknown offset. */
+#define BQ_PACK_OTC_THRESHOLD_C         45
+#define BQ_PACK_OTC_RECOVERY_C          40  /* must cool to <=45 before      */
+                                            /* charge resumes, so below OTC  */
+#define BQ_PACK_UTD_THRESHOLD_C        (-20)
+#define BQ_PACK_UTD_RECOVERY_C         (-15)
+
+/* The gauge only enters RELAXATION - and so only takes the OCV readings a
+ * learning cycle depends on - when current falls below this. MEASURED board
+ * draw is 26.5 mA with the unit running, so TI's 10 mA default can never be
+ * met and no Qmax update would ever happen, on the bench OR in the field.
+ *
+ * Deliberately NOT solved with Board Offset, which would make the gauge blind
+ * to a current that really does flow whenever the unit is on and would drift
+ * field SoC optimistic. 40 mA on a 2400 mAh pack is 0.017C - far too small to
+ * cause meaningful polarisation error in an OCV reading. */
+#define BQ_PACK_QUIT_CURRENT_MA         40
+
+/* Current-sense gain, as IEEE754 bit patterns so no float arithmetic is needed.
+ *
+ * The measured sense path on this board is 4.364 mOhm, within 0.1% of TI's
+ * factory default of 4.369 - so a pack from the factory is already right and
+ * this is a REPAIR value, not a calibration. It is written only when what is
+ * stored is implausible.
+ *
+ * Positive IEEE754 floats order correctly as unsigned integers, so a simple
+ * range test catches every corruption seen so far: 0.090 (0x3DB851EC) and 0.175
+ * (0x3E333333) fall below 1.0, while infinity (0x7F800000), zero, NaN and any
+ * negative value land above 20.0.
+ *
+ *   4.369f = 0x408BCED9    0.5f = 0x3F000000    20.0f = 0x41A00000
+ *
+ * The REPAIR band is deliberately WIDE: 0.5 to 20 mOhm. It exists to catch
+ * GARBAGE - infinity, 1,069,035, 0.090, 0.175, all of which this project has
+ * actually produced - and nothing else.
+ *
+ * It was briefly narrowed to 3.0-6.0 on 2026-10-05 to catch a stored 1.0, which
+ * made one pack read 4.4x high and trip OCC2 and OCD1 on ordinary currents.
+ * That was reverted the same day, because the premise turned out to be shaky:
+ * two boards measured their sense path as ~4.4 mOhm and ~11.4 mOhm, the second
+ * consistent with a 10 mOhm part where the schematic was read as 1 mOhm. With
+ * the nominal itself in doubt, a narrow band would overwrite legitimate
+ * per-unit calibrations - far worse than failing to catch a wrong one.
+ *
+ * So: the firmware repairs only what cannot possibly be a calibration, and
+ * anything merely suspicious is reported by BQ40Z50_ReportStatus() for a human
+ * to judge. UNTIL THE SHUNT VALUE IS SETTLED, treat the nominal below as
+ * indicative only - it came from one board's two-point measurement. */
+/* NOMINAL = 0.87 mOhm.
+ *
+ * THE GAIN MULTIPLIES, IT DOES NOT DIVIDE. Established on the bench 2026-10-05
+ * by writing two values and reading the current at an unchanged 97 mA load:
+ *
+ *      CC Gain 3.5842  ->  gauge reported  338 mA
+ *      CC Gain 11.38   ->  gauge reported 1266 mA
+ *
+ * Raising the gain RAISED the reading. Earlier working here assumed the
+ * opposite - that the gauge divides by it, as "mOhm" implies - and every value
+ * derived on that assumption (4.369 "nominal", 11.38, the 3.0-6.0 band) was
+ * therefore corrected in the wrong direction. Do not re-derive them.
+ *
+ * 0.87 comes from scaling the last measurement: 11.38 x 97/1266. It sits beside
+ * the 1 mOhm the schematic shows, which is the first time the schematic and the
+ * measurements have agreed. It also explains the very first symptom seen on
+ * this project - a resting pack reporting 4 mA while 17-26 mA flowed - as the
+ * factory default of 4.369 reading roughly 4x LOW for this board.
+ *
+ * UNRESOLVED: the reference pack read 423 mA at 99 mA with its gain at 1.0,
+ * which a multiplying gain cannot explain. Either that board differs or that
+ * measurement is not trustworthy. Worth repeating once this pack is right: if
+ * boards genuinely differ, a compiled-in nominal is the wrong idea and every
+ * pack needs calibrating against its own board. */
+#define BQ_GAIN_NOMINAL_BITS      0x3F5EB852ul   /* 0.87f */
+
+/* Repair band, 0.1 to 5.0 mOhm. Wide on purpose: it catches only what cannot be
+ * a calibration at all - infinity, 1,069,035, zero, negatives - and leaves
+ * anything arguable to the operator via the report and menu 9. */
+#define BQ_GAIN_MIN_BITS          0x3DCCCCCDul   /* 0.1f  */
+#define BQ_GAIN_MAX_BITS          0x40A00000ul   /* 5.0f  */
+
+/* "Looks like this board's sense path": +/-10% around nominal. Report-only -
+ * nothing is written on the strength of it. */
+#define BQ_GAIN_NEAR_MIN_BITS     0x3F47AE14ul   /* 0.78f */
+#define BQ_GAIN_NEAR_MAX_BITS     0x3F75C28Ful   /* 0.96f */
+
+/* Qmax seeding. TI ships 4400 mAh, against a real 2400 - an 80% overestimate,
+ * well outside Qmax Delta (5%) and Qmax Upper Bound (130%), so the first
+ * learning pass may reject its own measurement rather than converge. Seeded
+ * ONLY when it still reads this factory value: see bq_seed_qmax_if_default(). */
+#define BQ_QMAX_FACTORY_DEFAULT       4400
 
 /* BENCH ONLY - no thermistors fitted: internal die sensor as the sole
  * (cell) temperature source, so under/over-temp protections see a real
@@ -277,6 +522,12 @@ BQ_STATUS   BQ40Z50_EnsureFETPersist(uint16_t *mfg_init_out);
 BQ_STATUS   BQ40Z50_EnsureTempConfigBench(void);
 BQ_STATUS   BQ40Z50_ReadCellVoltages(uint16_t mv[4]);
 BQ_STATUS   BQ40Z50_ReadMAC32(uint16_t subcmd, uint32_t *value);
+/* Write both current-sense gains to BQ_GAIN_NOMINAL_BITS, unconditionally, and
+ * report what each reads back. Needs the pack UNSEALED with FULL ACCESS. The
+ * only way to correct a gain from the jig: the repair in ApplyGoldenImage()
+ * deliberately ignores values that are wrong but not absurd. */
+BQ_STATUS   BQ40Z50_SetSenseGain(void);
+
 BQ_STATUS   BQ40Z50_Seal(void);   /* production end step - not called by BringUp yet */
 
 /* Free the I2C2 bus from a slave stuck mid-byte holding SDA low.

@@ -795,6 +795,93 @@ static void ev2400_passive_mode(void)
 }
 
 
+/* EV2400 DEEP IDLE - for the learning cycle, where passive mode is for
+ * calibration.
+ *
+ * Same electrical contract as ev2400_passive_mode(): the PIC stays POWERED so
+ * the rails stay latched and the SMBus pull-ups - which sit on the PIC's own
+ * 3V3 - keep the bus up for the EV2400. What differs is that NOTHING else runs.
+ *
+ * A learning cycle takes the best part of a day, and every milliamp this board
+ * draws comes out of the pack being characterised: at the 26.5 mA measured in
+ * passive mode that is some 530 mAh over 20 hours, about 22% of a 2400 mAh
+ * pack, drifting the cell voltage down through both 5-hour relaxation periods.
+ * Asleep, the draw is a small fraction of that, so the relaxations are closer to
+ * a genuine rest and the OCV points the gauge takes are worth more.
+ *
+ * Switched off before sleeping:
+ *   - the Jetson 5V rail. Nothing else is on it (confirmed), and the lasers and
+ *     beam run from it - so dropping it makes it impossible to leave an emitter
+ *     lit by accident through a 20-hour run.
+ *   - every LED. A varying load is worse than a steady one when the gauge is
+ *     measuring 240 uV across a 1 mOhm shunt.
+ *   - the PIC itself.
+ *
+ * NO WAY OUT except a power cycle: no key handling (the UART clock stops with
+ * the core), no button, no timeout. Pull a battery - and UNWIRE THE EV2400
+ * FIRST, or it back-feeds 3V3 through the PIC's clamp diodes.
+ *
+ * WATCHDOG: the fuses have FWDTEN = ON at ~8.4 s and software cannot disable it.
+ * A PIC24F WDT time-out during SLEEP wakes the device rather than resetting it,
+ * so the loop below simply goes back down. If this ever proves wrong on this
+ * part the symptom is unmistakable and immediate - the jig reboots and redraws
+ * its menu within ten seconds of entering this mode - and the fallback is to
+ * stay awake on a slowed clock instead. Worth watching the first time.
+ */
+static void ev2400_deep_idle(void)
+{
+    uint16_t guard;
+
+    uart_puts("\r\n*** EV2400 deep idle - learning cycle ***\r\n"
+              "  Releasing the local SMBus to the EV2400, then sleeping.\r\n"
+              "  Wire SCL, SDA and GND only - leave EV2400 VCC disconnected,\r\n"
+              "  this board supplies the rail and the bus pull-ups.\r\n"
+              "\r\n"
+              "  Jetson 5V rail OFF, all emitters and LEDs OFF, PIC asleep.\r\n"
+              "  There is NO exit: no keys, no button, no serial once asleep.\r\n"
+              "  To finish: UNWIRE THE EV2400 FIRST, then pull a battery.\r\n\r\n");
+
+    i2c2_bus_release();
+
+    /* Both lines should float high on our own 3V3 pull-ups. Either reading low
+     * means something still holds the bus down and the EV2400 will not get on
+     * it - much better known now than twenty hours from now. */
+    uart_puts("  SDA (RB2) reads ");
+    uart_puts(SDA_LOCAL_GetValue()  ? "HIGH\r\n" : "LOW  ** still held **\r\n");
+    uart_puts("  SCL (RB3) reads ");
+    uart_puts(SCL__LOCAL_GetValue() ? "HIGH\r\n" : "LOW  ** still held **\r\n");
+
+    /* Everything off. The emitters are set high (off) as well as having their
+     * rail removed - belt and braces, and it leaves the pins in a defined
+     * state rather than driving into a dead rail. */
+    FRONT_LASER_PWM_SetHigh();
+    REAR_LASER_PWM_SetHigh();
+    BEAM_SetHigh();
+    PWM_IR_SetHigh();
+    BI_LED_GREEN_SetLow();
+    BI_LED_RED_SetLow();
+    RED_LED_ON_SetLow();                /* ring LED, if one is fitted */
+    JETSON_5V_ON_SetLow();
+
+    uart_puts("\r\n  sleeping now - power-cycle to return\r\n");
+
+    /* Let the last characters leave the shift register. The core clock stops at
+     * Sleep(), and anything still in flight would be truncated mid-character. */
+    for (guard = 0; guard < 10000u; guard++)
+    {
+        if (U1STAbits.TRMT)
+            break;
+        __delay32(FCY / 100000ul);       /* 10 us */
+    }
+
+    for (;;)
+    {
+        ClrWdt();                       /* full period before going down */
+        Sleep();                        /* WDT wakes us; straight back down */
+    }
+}
+
+
 static void menu_show(void)
 {
     uart_puts("\r\n"
@@ -809,19 +896,19 @@ static void menu_show(void)
      uart_puts("--- Use with App V3.0 and up ----\r\n"
               "-----------------------------------\r\n"
               "  0  Show all status\r\n"
-              "  1  Battery Minimal Function - NOT production\r\n"
+              "  1  Configure battery pack  (do this first)\r\n"
               "  2  Toggle Front laser\r\n"
               "  3  Toggle Rear laser\r\n"
               "  4  Toggle Ball detect beam\r\n"
               "  5  Toggle IR lights\r\n"
               "  6  Manual beam-break test\r\n"
               "  7  Test Level  1\r\n"
-              "  8  Load battery pack production Image\r\n"
-              "  9   TBD 3\r\n"
+              "  8  Load characterised image  [NOT YET AVAILABLE]\r\n"
               "                         \r\n"
               "                         \r\n"
               "  ---------------------- \r\n"
-              "  E  EV2400 passive mode (release SMBus)\r\n"
+              "  E  EV2400 passive mode (release SMBus) - calibration\r\n"
+              "  D  EV2400 deep idle (sleep, 5V off) - learning cycle\r\n"
               "  S  Save Settings\r\n"
               "  L  Load Production image\r\n"
               "  X  Exit and power down \r\n"
@@ -888,6 +975,26 @@ static uint8_t menu_dispatch(uint8_t key)
              * re-reads each entry it touches. */
             if (BQ40Z50_ApplyGoldenImage() != BQ_OK)
                 uart_puts("  ** one or more config writes FAILED **\r\n");
+
+            /* The current-sense gain, written UNCONDITIONALLY and every time.
+             *
+             * This was a separate menu item until 2026-10-05, on the principle
+             * that the gain is per-unit calibration and provisioning should not
+             * overwrite it. That principle does not apply here: TI's factory
+             * default is about 5x wrong for this board - it reads roughly a
+             * quarter of the real current - so EVERY pack needs it written, and
+             * there is no per-unit calibration step for it to destroy.
+             *
+             * It matters more than it sounds. A wrong gain is invisible in every
+             * other reading while making capacity meaningless, terminating
+             * charge the instant it starts, and tripping the over-current
+             * protections on ordinary loads - which on one pack latched OCC and
+             * OCD together and isolated it completely.
+             *
+             * If per-unit calibration is ever introduced, this has to come back
+             * out. See the gain notes in bq40z50.h. */
+            if (BQ40Z50_SetSenseGain() != BQ_OK)
+                uart_puts("  ** sense gain NOT set **\r\n");
 
             /* Independent read-back is the verdict - not the write status. */
             BQ40Z50_VerifyGoldenImage(&bad, &unset);
@@ -965,6 +1072,17 @@ static uint8_t menu_dispatch(uint8_t key)
    }
    break;
 
+   /* Deep idle, for the learning cycle. Separate from E deliberately: E keeps
+    * the 5V rail and the load-toggle keys because CALIBRATION needs to apply
+    * known loads, while this one exists to draw as little from the pack as
+    * possible for twenty hours. Do not merge them. */
+   case 'd':
+   case 'D':
+   {
+        ev2400_deep_idle();         /* never returns - power-cycle to exit */
+   }
+   break;
+
    case 's':
    case 'S':
    {
@@ -979,8 +1097,19 @@ static uint8_t menu_dispatch(uint8_t key)
     /* Not a placeholder: runs everything exactly as it does today, so a pack
      * can still be provisioned while the individual handlers above are being
      * filled in. It ends in the park below and does not come back here. */
-    case '8': 
-        return MENU_ACTION_SEQUENCE;
+    /* Reserved for loading the CHARACTERISED image - the Qmax and Ra data a
+     * learning cycle produces. That image does not exist yet, so this says so
+     * rather than running the old fixed sequence, which merely duplicated
+     * menu 1 and then parked forever on an LED verdict.
+     *
+     * The slot is kept deliberately: menu 1 makes a pack FUNCTIONAL with no
+     * host present, this one will give it real gauging data, and the two are
+     * different jobs. Do not fold them together when the image arrives. */
+    case '8':
+        uart_puts("\r\n  Characterised image loading is not implemented yet.\r\n"
+                  "  Menu 1 configures a pack fully, but without learned\r\n"
+                  "  Qmax/Ra data: state of charge will be approximate.\r\n");
+        break;
 
     case 'l':
     case 'L': 
@@ -1020,6 +1149,82 @@ static void jig_park_for_load(void)
         ClrWdt();
         __delay_ms(50);
     }
+}
+
+
+/* GATE on the 'L' path: is this pack fit to have an application loaded onto it?
+ *
+ * L parks for the load and never returns, so it bypasses the provisioning that
+ * the fixed sequence does - and a pack can therefore reach the field with its
+ * data flash unwritten. That is not recoverable downstream: the field
+ * application only ever READS the gauge (two SBS registers, no writes), so
+ * nothing after this point can put it right.
+ *
+ * An unprovisioned pack is not obviously broken either, which is what makes the
+ * gate worth having: it powers the unit, runs the lasers, and reports 100%
+ * charge. What it does NOT do is ask the charger for current, because with no
+ * Design Capacity the gauge has no denominator for state-of-charge, reports
+ * 0 mAh full-charge capacity and 100% regardless, and inhibits charging.
+ *
+ * Refusal returns to the menu, where 1 applies the configuration. The override
+ * exists for a pack that genuinely cannot be provisioned - a dead or
+ * unreachable gauge on a board that still needs an image for other testing -
+ * and it is a deliberate keystroke that appears in the serial log.
+ */
+static bool jig_ready_for_load(void)
+{
+    uint8_t bad = 0, unset = 0;
+    uint8_t key;
+    bool    ok = false;
+
+    uart_puts("\r\n*** pack check before loading an image ***\r\n");
+
+    /* Free the bus first: a slave holding SDA survives a PIC reset, and a
+     * verify that cannot read must never be mistaken for a verify that passed. */
+    if (!BQ40Z50_BusUnwedge())
+    {
+        uart_puts("  ** I2C2 BUS STUCK - the pack cannot be checked **\r\n");
+    }
+    else
+    {
+        BQ40Z50_VerifyGoldenImage(&bad, &unset);
+        ok = (bad == 0) && (unset == 0);
+    }
+
+    if (ok)
+    {
+        uart_puts("  pack configuration verified - load permitted\r\n");
+        return true;
+    }
+
+    uart_puts("\r\n  ** PACK NOT PROVISIONED - LOAD REFUSED **\r\n");
+    if (bad != 0)
+    {
+        uart_puts("  entries wrong or unreadable: ");
+        uart_put_int((int32_t)bad);
+        uart_puts("\r\n");
+    }
+    if (unset != 0)
+    {
+        uart_puts("  entries unconfigured: ");
+        uart_put_int((int32_t)unset);
+        uart_puts("\r\n");
+    }
+    BQ40Z50_ReportGoldenImage();
+
+    uart_puts("\r\n  Press 1 at the menu to apply the configuration, then L again.\r\n"
+              "  Loaded as it stands, this pack will report 0 mAh capacity and\r\n"
+              "  100% charge, and will never ask the charger for current.\r\n"
+              "\r\n  O to override and load anyway, anything else returns to the menu: ");
+    key = uart_wait_key(NULL);
+    if ((key == 'O') || (key == 'o'))
+    {
+        uart_puts("\r\n  ** OVERRIDDEN - loading an UNPROVISIONED pack **\r\n");
+        return true;
+    }
+
+    uart_puts("\r\n  back to the menu\r\n");
+    return false;
 }
 
 
@@ -1259,9 +1464,17 @@ int main(void)
      * own handler is stage 2.
      *
      * Falls through to the fixed sequence on 8, so a pack can still be
-     * provisioned normally while that work is done. */
-    if (menu_run() == MENU_ACTION_LOAD)
-        jig_park_for_load();        /* never returns */
+     * provisioned normally while that work is done.
+     *
+     * L is GATED: jig_ready_for_load() refuses an unprovisioned pack and we go
+     * back round into the menu, where 1 applies the configuration. A permitted
+     * load parks and never returns, so this loop only ever turns on a refusal.
+     * Anything else leaving the menu still falls through below. */
+    while (menu_run() == MENU_ACTION_LOAD)
+    {
+        if (jig_ready_for_load())
+            jig_park_for_load();        /* never returns */
+    }
 
      BEAM_SetHigh();
 

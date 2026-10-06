@@ -12,14 +12,31 @@
 extern "C" {
 #endif
   #include <stdint.h>  
- extern char LedOn;
- extern char FrontSense;
- extern char RearSense;
- extern uint32_t TransitTime;
- extern uint8_t GateTimeout;
- extern uint8_t WakeUp;
- extern uint8_t LightingUpdate;
- extern uint8_t DoTask;
+/* VOLATILE, and it matters. Every one of these is written by an interrupt
+ * handler and read (or cleared) by the main loop:
+ *
+ *   DoTask       tmr2.c            - the one-second task tick
+ *   FrontSense   pin_CustomISR.c   - beam broken at the front sensor
+ *   RearSense    pin_CustomISR.c   - and at the rear
+ *   TransitTime  pin_CustomISR.c   - TMR4 captured at the rear break
+ *   LedOn        pin_CustomISR.c   - a ball is in the gate
+ *   WakeUp       pin_CustomISR.c   - sensor activity while parked
+ *   GateTimeout  tmr4.c            - the ball never arrived
+ *
+ * Without volatile the compiler is entitled to cache them in registers across
+ * the main loop, and "if(DoTask)" would then never see the ISR's write. That
+ * costs nothing at -O0, which is why this has worked so far, but it is a latent
+ * bug and it is what makes -O1 unsafe on this code. Fixed ahead of any
+ * optimisation change, because at -O1 the symptom is a unit that looks dead:
+ * no one-second tick and no ball detection. */
+ extern volatile char LedOn;
+ extern volatile char FrontSense;
+ extern volatile char RearSense;
+ extern volatile uint32_t TransitTime;
+ extern volatile uint8_t GateTimeout;
+ extern volatile uint8_t WakeUp;
+ extern uint8_t LightingUpdate;    /* main-line only - not written by any ISR */
+ extern volatile uint8_t DoTask;
  
  
 

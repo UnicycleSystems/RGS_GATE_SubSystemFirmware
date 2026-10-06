@@ -4,8 +4,9 @@
 
 
 #define FIRMWARE_REV_MSB        3       //reset to  3 for next actual release
-#define FIRMWARE_REV_LSB        5     //reset to 5 for next incremental release
+#define FIRMWARE_REV_LSB        6     //reset to 5 for next incremental release
+#define FIRMWARE_REV_MINOR      0
 
-
+#define ReleaseCandidate  1
 
 #endif /* FIRMWARE_VERSION_H */
