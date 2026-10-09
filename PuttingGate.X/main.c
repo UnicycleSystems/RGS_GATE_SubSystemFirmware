@@ -32,6 +32,7 @@
 #include "../CommonFiles/header/persist_store.h"
 #include "firmware_version.h"
 #include "../CommonFiles/header/EEpromBlockLabels.h"
+#include "../CommonFiles/header/InitEEpromVals.h"
 #include "../CommonFiles/header/ArrayUtils.h"
 /* For BQ40Z50_I2C_ADDRESS and BQ_CMD_VOLTAGE only - bq40z50.c is NOT in this
  * project's build. That driver is heavily instrumented with UART reporting,
@@ -161,6 +162,18 @@ int main(void)
 
     PWR_EarlyRailHold(warmBoot);
 
+    /* Lay down the firmware-owned part of the emulated EEPROM BEFORE
+     * SYSTEM_Initialize(), because I2C1_Initialize() is inside it: from that
+     * point the Jetson can read the table, and it must not be able to read a
+     * table of zeros. Writing to EMULATE_EEPROM_Memory is just RAM, so it is
+     * safe this early.
+     *
+     * Only the firmware-owned values - table version, running firmware
+     * version, tick rate. Nothing per-unit is touched, so this cannot
+     * interfere with the restore further down. */
+    PopulateSelectedEEprom(FIRMWARE_RC, FIRMWARE_REV_MINOR,
+                           FIRMWARE_REV_LSB, FIRMWARE_REV_MSB);
+
     SYSTEM_Initialize();
   
  
@@ -172,12 +185,9 @@ int main(void)
     GateTimeout=0;
     TaskIndex=0;
      
-    /* The REQUESTED lamp state, until the Jetson says otherwise. All three on
-     * is the gate's working default, and it has to be set here because the
-     * orientation recovery re-applies this byte: left at zero, the first return
-     * to level would "restore" darkness. It drives nothing by itself - only a
-     * dispatched SetLasers() job or AllLightsRestore() acts on it. */
-    EMULATE_EEPROM_Memory[ConfigLasersAddr] = LaserState_LampsMask;
+    /* The requested lamp state is set AFTER PERSIST_LoadToEeprom() further
+     * down - the restore writes all 256 bytes, so setting it here would be
+     * overwritten by whatever the jig stored (which is zero). */
     PWM_RB11_Init();
     PWM_RB11_Enable();
     PWM_RB11_SetDuty(10);
@@ -206,11 +216,12 @@ int main(void)
     /* Power-on is complete: later resets in this power cycle read as warm. */
     PWR_MarkPowerOnComplete();
 
-   //pull in the accelerometer cal values.
-     xcal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalX_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalX_LSB_Addr]);
-     ycal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalY_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalY_LSB_Addr]);
-     zcal  = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalZ_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalZ_LSB_Addr]);
-       
+    /* The accelerometer cal values are pulled in further down, AFTER
+     * PERSIST_LoadToEeprom(). They used to be read here, which was 55 lines
+     * too early: the table had not been restored yet, so a calibrated unit
+     * read back zeros and ran uncorrected. Nothing between here and there
+     * uses them - first use is in the main loop. */
+
     FrontSensorOff;
     RearSensorOff;
     IFS1bits.T5IF = false;
@@ -247,29 +258,52 @@ int main(void)
     LastOnOff=0;
     uint32_t DebugTime;
   
-  // set the 'ticks per second
- 
- 
-    EMULATE_EEPROM_Memory[TicksPerSecMMSB] = (uint8_t)(0x00);  // Most significant byte
-    EMULATE_EEPROM_Memory[TicksPerSecNMSB] = (uint8_t)(0xF4);
-    EMULATE_EEPROM_Memory[TicksPerSecHLSB] = (uint8_t)(0x24);
-    EMULATE_EEPROM_Memory[TicksPerSecLLSB] = (uint8_t)(0x00);
+    /* Ticks per second and the table/firmware version are set by
+     * PopulateSelectedEEprom(), called before SYSTEM_Initialize() above. The
+     * hand-written copies that used to sit here have gone: two places setting
+     * the same bytes is how they drift apart. */
 
     /* Restore the configuration saved by the factory bring-up jig. Placed
-     * AFTER the hardcoded setters above so the stored values win (those
-     * setters become redundant once every unit has been through bring-up),
-     * and BEFORE the firmware version stamp below - the whole 256-byte block
-     * is mirrored, so FirmwareVersionAddr is in it, and a unit must report the
-     * version it is RUNNING, not the one current when the block was saved.
+     * BEFORE the PopulateSelectedEEprom() call below - the whole 256-byte
+     * block is mirrored, so the firmware version is in it, and a unit must
+     * report the version it is RUNNING, not the one current when the block was
+     * saved.
      *
-     * Returns false on a blank device (never brought up), leaving the defaults
-     * above in place. That is not an error. */
-    
-    
-   // PERSIST_LoadToEeprom();
+     * Returns false on a blank device (never brought up), leaving the values
+     * from the early call in place. That is not an error, and there is nothing
+     * useful to do about it here - this application has no console to report
+     * it on - so the result is deliberately discarded. */
+    PERSIST_LoadToEeprom();
 
-    EMULATE_EEPROM_Memory[FirmwareVersionAddr] = FIRMWARE_REV_LSB;
-    EMULATE_EEPROM_Memory[FirmwareVersionAddr-1] = FIRMWARE_REV_MSB;
+    /* Re-assert the firmware-owned values over whatever the restore brought
+     * back. Identical to the early call and to what RGS_BringUp does; it
+     * touches nothing per-unit, so the restored calibration survives. */
+    PopulateSelectedEEprom(FIRMWARE_RC, FIRMWARE_REV_MINOR,
+                           FIRMWARE_REV_LSB, FIRMWARE_REV_MSB);
+
+    /* The REQUESTED lamp state, until the Jetson says otherwise. All three on
+     * is the gate's working default, and it has to be set because the
+     * orientation recovery re-applies this byte: left at zero, the first return
+     * to level would "restore" darkness. It drives nothing by itself - only a
+     * dispatched SetLasers() job or AllLightsRestore() acts on it.
+     *
+     * Set HERE, after the restore, not up with the other start-up state: the
+     * whole 256-byte block is mirrored, so an earlier write is overwritten by
+     * the stored value - and the jig stores zero, which is exactly the "restore
+     * darkness" case above. The coded default therefore wins at every boot and
+     * the Jetson's request stays runtime state. */
+    EMULATE_EEPROM_Memory[ConfigLasersAddr] = LaserState_LampsMask;
+
+    /* Pull the accelerometer corrections into the working variables, now that
+     * the register file holds the restored block.
+     *
+     * This MUST stay after the load - the same rule RGS_BringUp follows. Read
+     * before it, these come back as zeros on a calibrated unit and the gate
+     * runs uncorrected. First use is in the main loop, so here is early
+     * enough. */
+    xcal = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalX_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalX_LSB_Addr]);
+    ycal = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalY_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalY_LSB_Addr]);
+    zcal = (int16_t)(((uint16_t)EMULATE_EEPROM_Memory[Accl_CalZ_MSB_Addr] << 8) | EMULATE_EEPROM_Memory[Accl_CalZ_LSB_Addr]);
  
    // INTERRUPT_TO_JETSON_SetLow();
     RestoreDetect();

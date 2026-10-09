@@ -38,6 +38,7 @@
       <itemPath>../CommonFiles/header/i2c2_helpers.h</itemPath>
       <itemPath>../CommonFiles/header/lis2dw12_i2c2.h</itemPath>
       <itemPath>../CommonFiles/header/power_control.h</itemPath>
+      <itemPath>../CommonFiles/header/InitEEpromVals.h</itemPath>
       <itemPath>../CommonFiles/header/ArrayUtils.h</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
@@ -101,6 +102,7 @@
       <itemPath>../CommonFiles/source/persist_store.c</itemPath>
       <itemPath>../CommonFiles/source/flash.s</itemPath>
       <itemPath>../CommonFiles/source/pitchandroll.c</itemPath>
+      <itemPath>../CommonFiles/source/InitEEpromVals.c</itemPath>
       <itemPath>../CommonFiles/source/ArrayUtils.c</itemPath>
       <itemPath>../CommonFiles/source/i2c2_helpers.c</itemPath>
       <itemPath>../CommonFiles/source/lis2dw12_i2c2.c</itemPath>

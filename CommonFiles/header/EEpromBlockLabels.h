@@ -155,10 +155,32 @@ extern "C" {
 #define BatteryPackVoltage_Addr (BatteryChargeState_Addr + BatteryChargeStateNumBytes )  //in mv, 0-65535
 #define BatteryPackVoltageNumBytes 2
 #define BattVoltReadAddr  (BatteryPackVoltage_Addr)   //!client side read address alias
+ 
     
+   //Firmware version - copied at run time from firmware_version.h  on start up.
+    // four bytes, in the from   MSB.LSB.Minor - rc   (where rc is release candidate. )
+    // NOTE the '+' : this region runs UPWARDS, each block starting after the
+    // previous one. Subtracting here put the four bytes on top of
+    // BatteryChargeState and BatteryPackVoltage.
+#define FirmwareVersionAddr (BatteryPackVoltage_Addr + BatteryPackVoltageNumBytes)
+#define FirmwareVersionNumBytes 4
 
+#define FirmwareVersionRcAddr FirmwareVersionAddr      // this is release candidate , and thus should be zero for anything that has been released.
+#define FirmwareVersionMinorAddr ( FirmwareVersionRcAddr + 1 )
+#define FirmwareVersionLSBAddr  ( FirmwareVersionMinorAddr + 1 )
+#define FirmwareVersionMSBAddr (FirmwareVersionLSBAddr + 1 )
     
     
+/*     thus each program in the suite should have
+ * 
+ * EMULATE_EEPROM_Memory[FirmwareVersionRcAddr] = FIRMWARE_RC
+ * EMULATE_EEPROM_Memory[FirmwareVersionMinorAddr] = FIRMWARE_REV_MINOR 
+ * EMULATE_EEPROM_Memory[FirmwareVersionLSBAddr] = FIRMWARE_REV_LSB
+ * EMULATE_EEPROM_Memory[FirmwareVersionMSBAddr] = FIRMWARE_REV_MSB  
+    
+ * quite early on its start up path, somewhere before the i2c is initialiesd
+ */
+ 
 
     
   
@@ -175,16 +197,30 @@ extern "C" {
 #define TableVerReadAddr  (TableVersionAddr)  //  !client side read address alias
     
 
- //Firmware version      
-#define FirmwareVersionAddr (TableVersionAddr - TableVersionNumBytes)
-#define FirmwareVersionNumBytes 2
-#define FirmwareVersionMSB FirmwareVersionAddr
-#define FirmwareVersionLSB  ( FirmwareVersionMSB - 1 )
+ //Spare/resereved  Reserved1   - can be reassigend      
+#define Reserved1Addr (TableVersionAddr - TableVersionNumBytes)
+#define Reserved1NumBytes 2
+#define Reserved1MSB Reserved1Addr
+#define Reserved1LSB  ( Reserved1MSB - 1 )
     
-#define FirmwareVerReadAddr (FirmwareVersionLSB)  //!client side read address alias
+    
 
-//Hardware Version    
-#define HardwareVersionAddr (FirmwareVersionAddr - FirmwareVersionNumBytes)
+
+//Hardware Version
+/* Anchored to Reserved1, NOT to the firmware version block.
+ *
+ * Reserved1 is what the old 2-byte firmware version became, so this keeps
+ * HardwareVersion - and the whole descending chain below it: TicksPerSecond,
+ * LaserState and everything after - exactly where it has always been.
+ *
+ * It used to read (FirmwareVersionAddr - FirmwareVersionNumBytes). That tied
+ * the entire lower half of the table to wherever the firmware version block
+ * happened to sit, so moving that block to the unused space near the battery
+ * fields silently dragged LaserState from 118 to 7 and took everything below
+ * it along. A provisioned unit's stored 256-byte block would then restore
+ * every field into the wrong place. Nothing down here should move because the
+ * version block moved. */
+#define HardwareVersionAddr (Reserved1Addr - Reserved1NumBytes)
 #define HardwareVersionNumBytes 2
     
 #define HardwareVerReadAddr (HardwareVersionAddr)    //!client side read address alias

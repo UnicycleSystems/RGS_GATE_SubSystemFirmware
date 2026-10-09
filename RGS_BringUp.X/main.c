@@ -33,7 +33,7 @@
 #include "../CommonFiles/header/persist_store.h"
 #include "firmware_version.h"
 #include "../CommonFiles/header/EEpromBlockLabels.h"
-#include "InitEEpromVals.h"
+#include "../CommonFiles/header/InitEEpromVals.h"
 #include "../CommonFiles/header/ArrayUtils.h"
 
 
@@ -1398,15 +1398,17 @@ int main(void)
     else
     {
         uart_puts("Persistent config: none stored - applying defaults\r\n");
-        InitEmulatedEEprom();
+        InitEmulatedEEprom(FIRMWARE_RC, FIRMWARE_REV_MINOR,
+                           FIRMWARE_REV_LSB, FIRMWARE_REV_MSB);
     }
 
-    /* Stamp the RUNNING firmware version over whatever was restored. The
+    /* Re-assert the firmware-owned values over whatever was restored. The
      * version lives inside the mirrored block, so a provisioned board would
      * otherwise report the version that was current when it was provisioned.
-     * InitEmulatedEEprom() writes these too, but only on the defaults path. */
-    EMULATE_EEPROM_Memory[FirmwareVersionMSB] = FIRMWARE_REV_MSB;
-    EMULATE_EEPROM_Memory[FirmwareVersionLSB] = FIRMWARE_REV_LSB;
+     * InitEmulatedEEprom() writes these too, but only on the defaults path,
+     * where this call is a harmless repeat - it touches nothing per-unit. */
+    PopulateSelectedEEprom(FIRMWARE_RC, FIRMWARE_REV_MINOR,
+                           FIRMWARE_REV_LSB, FIRMWARE_REV_MSB);
 
     /* Pull the accelerometer corrections into the working variables, now that
      * the register file holds either the restored block or the defaults.

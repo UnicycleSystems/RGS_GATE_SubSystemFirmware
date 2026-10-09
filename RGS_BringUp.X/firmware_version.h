@@ -13,7 +13,7 @@
 #define FIRMWARE_REV_LSB        6
 #define FIRMWARE_REV_MINOR      0
 
-#define ReleaseCandidate  1
+#define FIRMWARE_RC  3
 
 
 #endif /* FIRMWARE_VERSION_H */
