@@ -419,6 +419,44 @@ static BQ_STATUS bq_df_write_u32(uint16_t address, uint32_t value)
 
 /* ---------------- UART1 report helpers ---------------- */
 
+/* BQ_VERBOSE selects whether this driver carries its console reporting.
+ *
+ *   1 - the jig build. Full reporting over UART1.
+ *   0 - the field application. Reporting compiles out entirely.
+ *
+ * The field application never initialises UART1, so leaving the reporting in
+ * would be worse than useless: bq_print() waits up to 100 ms PER CHARACTER for
+ * a TX-ready that never comes, and there are 231 call sites and 3.6 kB of
+ * strings. A single status line would take minutes.
+ *
+ * The no-op forms below are MACROS, not empty functions, and that is
+ * deliberate. An empty function still takes its const char * argument, so
+ * every string literal is still emitted and still occupies program memory.
+ * Expanding to ((void)0) leaves the literals unreferenced and the linker drops
+ * them - which is where nearly all of the saving comes from.
+ *
+ * The consequence is that ARGUMENTS ARE NOT EVALUATED when BQ_VERBOSE is 0.
+ * Anything with a side effect must be hoisted into a local before the call.
+ * Audited 2026-11-02: only BQ40Z50_SecurityMode() was ever called from inside
+ * a print argument, and both sites now hoist it. Keep it that way.
+ */
+/* No default. Each project states its intent as a preprocessor macro in
+ * configurations.xml, alongside STANDALONE_BUILD:
+ *
+ *     RGS_BringUp.X  BQ_VERBOSE=1
+ *     PuttingGate.X  BQ_VERBOSE=0
+ *
+ * Defaulting either way is a trap. Default on and a field build that forgets
+ * it spends up to 100 ms per character waiting for a UART that was never
+ * initialised - minutes per status line. Default off and the jig silently
+ * loses its console. An #error costs one line and makes both builds declare
+ * which they are. */
+#ifndef BQ_VERBOSE
+#error "BQ_VERBOSE must be set per project: 1 for the jig, 0 for the field app"
+#endif
+
+#if BQ_VERBOSE
+
 /* UART1_Write() spins on a full TX buffer without clearing the watchdog,
  * which becomes a reset loop in the bootloadable build (WDT on, ~8.4 s).
  * Wait for room ourselves, with a bound, and drop the report rather than
@@ -468,6 +506,15 @@ static void bq_print_u16(uint16_t value)
     } while (value != 0 && i > 0);
     bq_print(&buf[i]);
 }
+
+#else   /* BQ_VERBOSE == 0 - reporting compiled out */
+
+#define bq_print(s)             ((void)0)
+#define bq_print_line(s)        ((void)0)
+#define bq_print_hex(v, d)      ((void)0)
+#define bq_print_u16(v)         ((void)0)
+
+#endif  /* BQ_VERBOSE */
 
 /* ---------------- Device operations ---------------- */
 
@@ -753,6 +800,7 @@ volatile uint32_t bq_dbg_safety_status; /* nonzero = protection active */
 volatile uint32_t bq_dbg_pf_status;     /* nonzero = permanent fail latched */
 volatile uint16_t bq_dbg_temp_01K;      /* SBS Temperature(), 0.1 K (2950 = 22 C) */
 
+#if BQ_VERBOSE
 static const char *bq_mode_name(BQ_SEC_MODE mode)
 {
     switch (mode)
@@ -763,6 +811,7 @@ static const char *bq_mode_name(BQ_SEC_MODE mode)
         default:                  return "UNKNOWN";
     }
 }
+#endif  /* BQ_VERBOSE */
 
 BQ_STATUS BQ40Z50_BringUp(void)
 {
@@ -865,8 +914,18 @@ BQ_STATUS BQ40Z50_BringUp(void)
      * earlier failures: on this bench the bus drops out intermittently, so
      * aborting a run throws away progress. Each step lands whenever it gets
      * a clean window; 'worst' carries the first error for the caller. */
-    bq_print("  Security mode: ");
-    bq_print_line(bq_mode_name(BQ40Z50_SecurityMode()));
+    /* Reporting only, and the whole block is guarded rather than relying on
+     * the print macros to swallow it. BQ40Z50_SecurityMode() performs an I2C
+     * read, so left inline it would either run pointlessly in the field build
+     * or vanish as an invisible side effect of macro expansion. Nothing
+     * downstream uses the result; the guard makes that explicit. */
+#if BQ_VERBOSE
+    {
+        BQ_SEC_MODE mode_now = BQ40Z50_SecurityMode();
+        bq_print("  Security mode: ");
+        bq_print_line(bq_mode_name(mode_now));
+    }
+#endif
     st = BQ40Z50_Unseal();
     if (st != BQ_OK)
     {
@@ -978,7 +1037,9 @@ BQ_STATUS BQ40Z50_BringUp(void)
 
 /* ---------------- Golden image ---------------- */
 
+#if BQ_VERBOSE
 static void bq_print_fail(void);        /* defined with the status report */
+#endif
 
 /* Gas gauging is only enabled once Design Capacity is known - see the
  * pack-specific block in bq40z50.h for why. */
@@ -993,9 +1054,9 @@ static void bq_print_fail(void);        /* defined with the status report */
 typedef struct
 {
     uint16_t    address;
-    uint8_t     size;       /* 1 or 2 bytes */
+    uint8_t     size;       /* 1, 2 or 4 bytes */
     uint8_t     flags;
-    uint16_t    value;
+    uint32_t    value;      /* 32-bit so the 4-byte gains can be table entries */
     const char *name;
 } bq_golden_entry_t;
 
@@ -1008,6 +1069,29 @@ typedef struct
  * pack read 0x0310 before provisioning and now gets 0x0018 - GAUGE_EN gained,
  * bits 8 and 9 lost. Deliberate, but worth knowing when a pack behaves
  * differently after bring-up. */
+/* ===================================================================
+ * INVARIANT: nothing the GAUGE updates by itself may appear in this table.
+ *
+ * Every entry here is written whenever it differs from the value below. That
+ * is safe only for static configuration. Put a gauge-maintained value in here
+ * - Qmax, a Ra table entry, Update Status, cycle count, a DOD figure - and it
+ * will be overwritten with the compiled-in constant on every reconfiguration,
+ * silently destroying learning across the whole fleet.
+ *
+ * Qmax is the one value that needs seeding and must not be in the table; see
+ * bq_seed_qmax_if_default(), which tests "is this still the factory default"
+ * rather than "does this match".
+ *
+ * Because the table is static, applying it is idempotent: a pack already
+ * configured has no differences, so nothing is written and nothing is reset.
+ * That property is what makes it safe to run from the field application's
+ * boot path, and it holds only while this invariant does.
+ *
+ * The configuration fingerprint (bq_config_crc16 below) is computed over this
+ * table, so any edit here changes the fingerprint and every stamped pack in
+ * the field reapplies on next boot. Bump BQ_CONFIG_VERSION as well, so the
+ * change is legible to a human and not only to the CRC.
+ * =================================================================== */
 static const bq_golden_entry_t bq_golden[] =
 {
     /* SLEEP deliberately NOT set. Policy for this product is that the pack
@@ -1080,6 +1164,22 @@ static const bq_golden_entry_t bq_golden[] =
       BQ_DEGC_TO_01K(BQ_PACK_UTD_THRESHOLD_C),      "UTD Thresh"     },
     { BQ_DF_UTD_RECOVERY,        2, 0,
       BQ_DEGC_TO_01K(BQ_PACK_UTD_RECOVERY_C),       "UTD Recovery"   },
+
+    /* ---- Current-sense gains, 4 bytes, IEEE754 single ----
+     * Ordinary entries: written whenever they differ, like everything else
+     * here. That is correct ONLY while there is no per-pack calibration - the
+     * nominal is a property of the board design, so any other value is an
+     * error rather than a measurement.
+     *
+     * This replaced a conditional "repair only if absurd" check, which
+     * tolerated a gain of 0.60 - 30% out, and wrong in the direction that
+     * makes a current reading look believable.
+     *
+     * WHEN per-pack factory calibration arrives these must come OUT of the
+     * table and go back to a conditional form, or provisioning will overwrite
+     * every calibration it meets. */
+    { BQ_DF_CC_GAIN,             4, 0, BQ_GAIN_NOMINAL_BITS, "CC Gain"   },
+    { BQ_DF_CAPACITY_GAIN,       4, 0, BQ_GAIN_NOMINAL_BITS, "Cap Gain"  },
 };
 
 #define BQ_GOLDEN_COUNT  (sizeof(bq_golden) / sizeof(bq_golden[0]))
@@ -1087,12 +1187,110 @@ static const bq_golden_entry_t bq_golden[] =
 volatile uint8_t bq_dbg_golden_mismatch;
 volatile uint8_t bq_dbg_golden_unset;
 
-static BQ_STATUS bq_seed_qmax_if_default(void);        /* defined below Apply */
-static BQ_STATUS bq_repair_gain_if_implausible(void);  /* ditto              */
-
-static BQ_STATUS bq_golden_read(const bq_golden_entry_t *e, uint16_t *actual)
+/* ---------------- Configuration fingerprint ----------------
+ *
+ * CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over the whole table, so the
+ * pack can be stamped with "configured by THIS configuration" and the boot
+ * path can skip 25 data flash reads when the stamp still matches.
+ *
+ * Address, size and flags go in alongside the value. Relocating a parameter,
+ * changing its width, or changing whether it is skipped when zero all alter
+ * what gets written to the pack, so all of them must alter the fingerprint.
+ * The name strings are deliberately excluded - a typo fix should not force a
+ * fleet-wide reconfiguration.
+ *
+ * Bitwise rather than table-driven: 25 entries x 8 bytes is 1600 iterations
+ * once at boot, against 512 bytes for a lookup table.
+ */
+static uint16_t bq_crc16_byte(uint16_t crc, uint8_t b)
 {
-    uint8_t b = 0;
+    uint8_t i;
+
+    crc ^= (uint16_t)((uint16_t)b << 8);
+    for (i = 0; i < 8u; i++)
+        crc = (crc & 0x8000u) ? (uint16_t)((uint16_t)(crc << 1) ^ 0x1021u)
+                              : (uint16_t)(crc << 1);
+    return crc;
+}
+
+uint16_t BQ40Z50_ConfigFingerprint(void)
+{
+    uint16_t crc = 0xFFFFu;
+    uint8_t  i;
+
+    for (i = 0; i < BQ_GOLDEN_COUNT; i++)
+    {
+        const bq_golden_entry_t *e = &bq_golden[i];
+
+        crc = bq_crc16_byte(crc, (uint8_t)(e->address >> 8));
+        crc = bq_crc16_byte(crc, (uint8_t)e->address);
+        crc = bq_crc16_byte(crc, e->size);
+        crc = bq_crc16_byte(crc, e->flags);
+        crc = bq_crc16_byte(crc, (uint8_t)(e->value >> 24));
+        crc = bq_crc16_byte(crc, (uint8_t)(e->value >> 16));
+        crc = bq_crc16_byte(crc, (uint8_t)(e->value >> 8));
+        crc = bq_crc16_byte(crc, (uint8_t)e->value);
+    }
+    return crc;
+}
+
+BQ_STATUS BQ40Z50_CheckConfigStamp(bool *matches)
+{
+    uint16_t magic = 0, crc = 0;
+    uint8_t  ver = 0;
+    BQ_STATUS st;
+
+    if (matches != NULL)
+        *matches = false;
+
+    /* Magic first. On a pack that has never been stamped this reads as TI's
+     * factory default 0x6162 ("ab"), so the remaining reads are skipped. */
+    st = bq_df_read_word(BQ_STAMP_MAGIC_ADDR, &magic);
+    if (st != BQ_OK)
+        return st;
+    if (magic != BQ_STAMP_MAGIC)
+        return BQ_OK;                   /* readable, simply not stamped */
+
+    st = bq_df_read_byte(BQ_STAMP_VER_ADDR, &ver);
+    if (st != BQ_OK)
+        return st;
+
+    st = bq_df_read_word(BQ_STAMP_CRC_ADDR, &crc);
+    if (st != BQ_OK)
+        return st;
+
+    if (matches != NULL)
+        *matches = (ver == BQ_CONFIG_VERSION) &&
+                   (crc == BQ40Z50_ConfigFingerprint());
+    return BQ_OK;
+}
+
+BQ_STATUS BQ40Z50_WriteConfigStamp(void)
+{
+    BQ_STATUS st;
+
+    /* Magic written LAST, because it is the validity marker. Interrupted
+     * after the version and CRC but before the magic, the stamp reads as
+     * absent and the pack is reconfigured next boot - wasteful but correct.
+     * Written first, an interruption would leave a half-stamped pack claiming
+     * to carry a configuration it does not have, silently and permanently. */
+    st = bq_df_write_word(BQ_STAMP_CRC_ADDR, BQ40Z50_ConfigFingerprint());
+    if (st != BQ_OK)
+        return st;
+
+    st = bq_df_write_byte(BQ_STAMP_VER_ADDR, (uint8_t)BQ_CONFIG_VERSION);
+    if (st != BQ_OK)
+        return st;
+
+    return bq_df_write_word(BQ_STAMP_MAGIC_ADDR, BQ_STAMP_MAGIC);
+}
+
+static BQ_STATUS bq_seed_qmax_if_default(void);        /* defined below Apply */
+
+static BQ_STATUS bq_golden_read(const bq_golden_entry_t *e, uint32_t *actual)
+{
+    uint8_t  b = 0;
+    uint16_t w = 0;
     BQ_STATUS st;
 
     if (e->size == 1)
@@ -1101,12 +1299,17 @@ static BQ_STATUS bq_golden_read(const bq_golden_entry_t *e, uint16_t *actual)
         *actual = b;
         return st;
     }
-    return bq_df_read_word(e->address, actual);
+    if (e->size == 4)
+        return bq_df_read_u32(e->address, actual);
+
+    st = bq_df_read_word(e->address, &w);
+    *actual = w;
+    return st;
 }
 
 BQ_STATUS BQ40Z50_VerifyGoldenImage(uint8_t *mismatches, uint8_t *unset)
 {
-    uint16_t actual;
+    uint32_t actual;
     uint8_t i, bad = 0, skipped = 0;
     BQ_STATUS st, worst = BQ_OK;
 
@@ -1138,15 +1341,29 @@ BQ_STATUS BQ40Z50_VerifyGoldenImage(uint8_t *mismatches, uint8_t *unset)
     return worst;
 }
 
+/* Optional progress hook, NULL by default. Called once per table entry by
+ * BQ40Z50_ApplyGoldenImage(), which on a pack needing full reconfiguration
+ * takes the best part of ten seconds - BQ_T_DF_WRITE_MS is 200 ms and there
+ * are 25 entries. The jig reports progress over UART; the field application
+ * has no console, so it uses this to show the user something is happening
+ * rather than appearing to have hung.
+ *
+ * Deliberately a hook rather than LED code in the driver: this layer knows
+ * nothing about the board it is running on. */
+void (*BQ40Z50_ProgressHook)(void) = NULL;
+
 BQ_STATUS BQ40Z50_ApplyGoldenImage(void)
 {
-    uint16_t actual;
+    uint32_t actual;
     uint8_t i;
     BQ_STATUS st, worst = BQ_OK;
 
     for (i = 0; i < BQ_GOLDEN_COUNT; i++)
     {
         const bq_golden_entry_t *e = &bq_golden[i];
+
+        if (BQ40Z50_ProgressHook != NULL)
+            BQ40Z50_ProgressHook();
 
         if ((e->flags & BQ_GF_SKIP_IF_ZERO) && e->value == 0)
             continue;
@@ -1156,7 +1373,8 @@ BQ_STATUS BQ40Z50_ApplyGoldenImage(void)
             continue;                   /* already correct */
 
         st = (e->size == 1) ? bq_df_write_byte(e->address, (uint8_t)e->value)
-                            : bq_df_write_word(e->address, e->value);
+           : (e->size == 4) ? bq_df_write_u32(e->address, e->value)
+                            : bq_df_write_word(e->address, (uint16_t)e->value);
         if (st != BQ_OK)
         {
             if (worst == BQ_OK) worst = st;
@@ -1174,11 +1392,9 @@ BQ_STATUS BQ40Z50_ApplyGoldenImage(void)
             worst = BQ_ERR_DF_VERIFY;
     }
 
-    /* Both of these are CONDITIONAL, which is why neither is a table entry. */
-    st = bq_repair_gain_if_implausible();
-    if (st != BQ_OK && worst == BQ_OK)
-        worst = st;
-
+    /* Qmax is the one remaining exception to "write whenever it differs".
+     * The gains used to be a second exception; they are ordinary table
+     * entries now - see the note beside them. */
     st = bq_seed_qmax_if_default();
     if (st != BQ_OK && worst == BQ_OK)
         worst = st;
@@ -1222,7 +1438,9 @@ BQ_STATUS BQ40Z50_ApplyGoldenImage(void)
 BQ_STATUS BQ40Z50_SetSenseGain(void)
 {
     static const uint16_t gain_addr[] = { BQ_DF_CC_GAIN, BQ_DF_CAPACITY_GAIN };
+#if BQ_VERBOSE
     static const char *const gain_name[] = { "CC Gain", "Capacity Gain" };
+#endif
     uint8_t  i;
     uint32_t actual;
     BQ_STATUS st, worst = BQ_OK;
@@ -1262,10 +1480,30 @@ BQ_STATUS BQ40Z50_SetSenseGain(void)
     return worst;
 }
 
-static BQ_STATUS bq_repair_gain_if_implausible(void)
+/* Unconditional sense-gain check, for the field application to call on every
+ * boot. Two 4-byte reads on the common path and no writes.
+ *
+ * Both gains are ALSO ordinary bq_golden[] entries, so ApplyGoldenImage()
+ * corrects them - but that only runs when the configuration stamp says the
+ * pack needs reconfiguring. A gain that goes bad on an already-stamped pack
+ * would otherwise never be noticed again, and a wrong gain is the one fault
+ * that makes every current reading wrong while looking entirely plausible.
+ * This is the single ongoing integrity check the sub-system performs.
+ *
+ * EXACT comparison, not a plausibility band. With no per-pack calibration the
+ * nominal is a property of the board design, so any other value is an error
+ * rather than a measurement. The band this replaced tolerated 0.60 - 30% out,
+ * and wrong in the direction that still looks believable.
+ *
+ * Revisit when factory calibration arrives, at the same time as the table
+ * entries.
+ */
+BQ_STATUS BQ40Z50_EnsureSenseGain(void)
 {
     static const uint16_t gain_addr[] = { BQ_DF_CC_GAIN, BQ_DF_CAPACITY_GAIN };
+#if BQ_VERBOSE
     static const char *const gain_name[] = { "CC Gain", "Capacity Gain" };
+#endif
     uint8_t  i;
     uint32_t actual;
     BQ_STATUS st, worst = BQ_OK;
@@ -1279,14 +1517,14 @@ static BQ_STATUS bq_repair_gain_if_implausible(void)
             continue;
         }
 
-        if (actual >= BQ_GAIN_MIN_BITS && actual <= BQ_GAIN_MAX_BITS)
-            continue;                   /* plausible - leave the calibration */
+        if (actual == BQ_GAIN_NOMINAL_BITS)
+            continue;                   /* correct - the common path */
 
         bq_print("  ** ");
         bq_print(gain_name[i]);
-        bq_print(" implausible (");
+        bq_print(" was ");
         bq_print_hex(actual, 8);     /* prints its own 0x prefix */
-        bq_print_line(") - restoring nominal **");
+        bq_print_line(" - writing nominal **");
 
         st = bq_df_write_u32(gain_addr[i], BQ_GAIN_NOMINAL_BITS);
         if (st != BQ_OK && worst == BQ_OK)
@@ -1348,9 +1586,24 @@ static BQ_STATUS bq_seed_qmax_if_default(void)
     return worst;
 }
 
+/* ==================================================================
+ * Everything below here is REPORTING ONLY and compiles out entirely
+ * for the field application.
+ *
+ * With BQ_VERBOSE 0 the print macros already swallow the output, but the
+ * function bodies would still be compiled and linked - roughly 630 lines of
+ * loops, comparisons and 20 device reads, gathering values that are then
+ * thrown away. Nothing in the field application calls any of it, so without
+ * this guard it is pure dead weight in flash.
+ *
+ * Nothing load-bearing may be added below this line.
+ * ================================================================== */
+#if BQ_VERBOSE
+
 void BQ40Z50_ReportGoldenImage(void)
 {
-    uint16_t actual, sbs = 0;
+    uint32_t actual;            /* 32-bit: the gain entries are 4 bytes */
+    uint16_t sbs = 0;
     uint8_t i;
     BQ_STATUS st;
 
@@ -1395,14 +1648,20 @@ void BQ40Z50_ReportGoldenImage(void)
      * field we can cross-check: SBS DesignCapacity() (0x18) reports the gauge's
      * own interpretation of DF 0x48E5. If these disagree, every multi-byte
      * entry above is suspect. */
-    if (bq_df_read_word(BQ_DF_DESIGN_CAPACITY_MAH, &actual) == BQ_OK &&
-        bq_read_word(0x18, &sbs))
     {
-        bq_print("  Byte order  : DF ");
-        bq_print_u16(actual);
-        bq_print(" mAh vs SBS ");
-        bq_print_u16(sbs);
-        bq_print_line(actual == sbs ? " mAh  ok" : " mAh  MISMATCH");
+        /* Its own 16-bit local: 'actual' above is 32-bit now so the table can
+         * hold the 4-byte gains, and this is a plain word read. */
+        uint16_t df_mah = 0;
+
+        if (bq_df_read_word(BQ_DF_DESIGN_CAPACITY_MAH, &df_mah) == BQ_OK &&
+            bq_read_word(0x18, &sbs))
+        {
+            bq_print("  Byte order  : DF ");
+            bq_print_u16(df_mah);
+            bq_print(" mAh vs SBS ");
+            bq_print_u16(sbs);
+            bq_print_line(df_mah == sbs ? " mAh  ok" : " mAh  MISMATCH");
+        }
     }
 }
 
@@ -1532,8 +1791,13 @@ void BQ40Z50_ReportStatus(void)
             }
             if (sep)
                 bq_print(", ");
-            bq_print("sec=");
-            bq_print(bq_mode_name(BQ40Z50_SecurityMode()));
+#if BQ_VERBOSE
+            {   /* see the note at the first SecurityMode() call */
+                BQ_SEC_MODE mode_now = BQ40Z50_SecurityMode();
+                bq_print("sec=");
+                bq_print(bq_mode_name(mode_now));
+            }
+#endif
             bq_print("]");
 
             if (op & BQ_OP_FUSE)
@@ -1940,8 +2204,10 @@ void BQ40Z50_ReportStatus(void)
     {
         static const uint16_t gain_addr[] =
             { BQ_DF_CC_GAIN, BQ_DF_CAPACITY_GAIN };
+#if BQ_VERBOSE
         static const char *const gain_label[] =
             { "  CC Gain   : ", "  Cap Gain  : " };
+#endif
         uint8_t  g;
         uint32_t bits;
 
@@ -1977,3 +2243,5 @@ void BQ40Z50_ReportStatus(void)
         bq_print_line("");
     }
 }
+
+#endif  /* BQ_VERBOSE - reporting block */

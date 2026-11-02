@@ -40,7 +40,8 @@ extern "C" {
 // 'Hard coded' parameters that are used by the subsystem build, 
 // to be  checked/ updated on any release
 //These are not, in this form, directly used by the 
-#define   TableVersion 3   //Version 3 - added power handling and jetson calls/alerts,aliases for some internals
+#define   TableVersion 4   //Version 4 - added current measurement
+    
  // -------   *****  Please do read this. It's not hard. ***********  
  //---------------------!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!-----------------------
  // 
@@ -181,7 +182,11 @@ extern "C" {
  * quite early on its start up path, somewhere before the i2c is initialiesd
  */
  
-
+    
+//instantaneous current drawn from the pack ,in mA    
+#define Current_mA_LSB (FirmwareVersionMSBAddr + 1)
+#define Current_mA_MSB (Current_mA_LSB + 1)
+    
     
   
  //READ ONLY Block 2   

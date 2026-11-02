@@ -39,6 +39,7 @@
       <itemPath>../CommonFiles/header/lis2dw12_i2c2.h</itemPath>
       <itemPath>../CommonFiles/header/power_control.h</itemPath>
       <itemPath>../CommonFiles/header/InitEEpromVals.h</itemPath>
+      <itemPath>../CommonFiles/header/bq40z50.h</itemPath>
       <itemPath>../CommonFiles/header/ArrayUtils.h</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
@@ -103,6 +104,7 @@
       <itemPath>../CommonFiles/source/flash.s</itemPath>
       <itemPath>../CommonFiles/source/pitchandroll.c</itemPath>
       <itemPath>../CommonFiles/source/InitEEpromVals.c</itemPath>
+      <itemPath>../CommonFiles/source/bq40z50.c</itemPath>
       <itemPath>../CommonFiles/source/ArrayUtils.c</itemPath>
       <itemPath>../CommonFiles/source/i2c2_helpers.c</itemPath>
       <itemPath>../CommonFiles/source/lis2dw12_i2c2.c</itemPath>
@@ -195,7 +197,7 @@
         <property key="optimization-level" value="0"/>
         <property key="post-instruction-scheduling" value="default"/>
         <property key="pre-instruction-scheduling" value="default"/>
-        <property key="preprocessor-macros" value=""/>
+        <property key="preprocessor-macros" value="BQ_VERBOSE=0"/>
         <property key="scalar-model" value="default"/>
         <property key="use-cci" value="false"/>
         <property key="use-iar" value="false"/>
@@ -638,7 +640,7 @@
         <property key="optimization-level" value="0"/>
         <property key="post-instruction-scheduling" value="default"/>
         <property key="pre-instruction-scheduling" value="default"/>
-        <property key="preprocessor-macros" value="STANDALONE_BUILD"/>
+        <property key="preprocessor-macros" value="STANDALONE_BUILD;BQ_VERBOSE=0"/>
         <property key="scalar-model" value="default"/>
         <property key="use-cci" value="false"/>
         <property key="use-iar" value="false"/>

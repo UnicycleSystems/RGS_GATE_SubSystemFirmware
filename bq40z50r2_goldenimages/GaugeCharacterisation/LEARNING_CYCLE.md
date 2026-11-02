@@ -571,3 +571,820 @@ learn while the charger cannot reach a valid termination, and that the capacity
 accumulator needs investigating before another cycle is attempted.
 
 Do not repeat the cycle until at least the charger is resolved.
+
+---
+
+## Cycle 2 attempt — 2026-10-16 — still no `VCT`
+
+Aim was to get a valid charge termination by lowering the charging voltage to
+something the 16.55 V charger can actually reach. Did not succeed, but
+established two concrete mechanisms that were invisible before.
+
+### ✅ Root cause of cycle 1 found: the gauge was never in a charging state
+
+**`DSG` in `Gauging Status` stayed set through the entire four-hour charge.**
+The gauge believed the pack was still *discharging*, latched from the previous
+run.
+
+Clearing `DSG` requires charge current above **`Chg Current Threshold` = 50 mA**.
+The pack had risen to meet the charger, so the charger could only supply ~42 mA,
+of which the PIC's parasitic load eats 12 mA — leaving **30 mA net, permanently
+below the threshold**.
+
+The upper `Charging Status` row confirmed it: `NCT`, `CCC`, `CVR`, `CCR` all
+clear for the whole charge. Only `HV` was set, which is a voltage-region
+observation, not a charging state.
+
+**You cannot terminate a charge the gauge does not believe has started.** No
+amount of threshold tuning addresses this.
+
+Proven by fixing it: after discharging deeply to restore headroom, the charger
+went to 808 mA and **`DSG` cleared within seconds** (`Gauging Status` `0xC0` →
+`0x90`).
+
+### ⚠ Temperature band switched mid-charge, STL → RT
+
+`Temp Range` moved from `0x04` (`STL`) to `0x08` (`RT`) as the pack warmed from
+18.6 °C to 21.8 °C.
+
+**Only `Standard Temp Low` and `Standard Temp High` had been lowered to
+4050 mV. `Rec Temp` was left at 4100 mV** — it was already "low enough" when
+looked at in isolation. So the active charging voltage silently became
+**16400 mV (4100 mV/cell)**, confirmed by the `Charging Voltage` register
+reading 16400.
+
+Cell 2 reached 4111 mV against that 4100 mV target: **11 mV of margin**, where
+4050 would have given 60 mV.
+
+**Lesson: change every temperature band together.** A charging voltage that
+works at 18 °C and fails at 22 °C is an intermittent fault that would be
+extremely expensive to diagnose in the field, and nothing about the symptom
+points at temperature.
+
+### `VCT` still did not set — unexplained
+
+Current tapered 800 mA → 32 mA, so it necessarily crossed the 250 mA
+`Charge Term Taper Current` threshold. At that point `DSG` was still clear and
+the cells were above the voltage condition (target − `Charge Term Voltage`
+75 mV). That window should have worked.
+
+Either the band change disrupted the evaluation mid-taper, or something gates
+`VCT` that has not been found. **This remains open.**
+
+Once current fell below 50 mA, `DSG` re-latched and the gauge dropped out of
+charging state again — the same trap as cycle 1.
+
+### Readings at the end of the charge
+
+| | |
+|---|---|
+| Cells | 4151 / 4111 / 4141 / 4127 mV (spread 40 mV) |
+| BAT pin | 16540 mV |
+| Current | 32 mA |
+| Temperature | 21.8 °C (`RT` band) |
+| Charging Voltage (register) | 16400 mV |
+| Gauging Status | `0xD0` — `CF`, `DSG`, `BAL_EN` |
+| IT Status | `0x0118` — `VDQ`, `QEN`, `VOK` |
+| Remaining Capacity | 2142 mAh (**still frozen**) |
+| Max Error | 100 % |
+| Qmax cells 1–4 | 2400 mAh |
+
+New registers seen: `True Full Chg Q` = 1532 mAh, `Initial Q` = 80 mAh — the
+gauge tracks *something*. But **`QMax Passed Q` = 0 mAh**, so the accumulator
+that matters is still frozen.
+
+Per-cell `QMax DOD0` values differ wildly: cell 1 = 1308, cell 2 = 6473,
+cell 3 = 4669, cell 4 = 1504. Directionally consistent with cell 2 being
+weakest, but a factor of five apart is striking and worth understanding.
+
+### Also noted
+
+**The deep discharge overshot.** Intended 20–30%, actually went to cell 2 =
+2799 mV — below the 2800 mV `Term Min Cell V` floor. No safety flags tripped
+and no damage apparent, but watch the clock on resistor discharges: an hour at
+0.68 A takes this pack most of the way down, not a third.
+
+**Pre-charge works as expected.** From 2.8 V/cell the charger trickled at
+~47 mA, then switched to full 808 mA within minutes once cells passed ~3.0 V.
+During trickle the PACK/BAT gap was 4285 mV — that is current limiting, not the
+~226 mV calibration offset.
+
+### Plan for next attempt
+
+1. **`Rec Temp Charging Voltage` → 4050 mV**, so all bands agree and cell 2 has
+   margin regardless of temperature.
+2. **Raise `Charge Term Taper Current` from 250 mA to ~400 mA.** Declare
+   termination while current is still high and the gauge is unambiguously in a
+   charging state, rather than relying on a window that closes as current falls
+   toward the thresholds that eject it. C/5 is a cruder definition of full, but
+   a termination that can be reached beats a precise one that cannot.
+3. Partial discharge (20–30 min on the 24 Ω resistor) to create headroom, then
+   recharge and watch `VCT` as current tapers through 400 mA.
+
+### Overnight on charge — 2026-10-17 morning
+
+Left on charge overnight deliberately, to let balancing run at high SOC.
+
+**Balancing worked.** Spread down from 40 mV to **17 mV** (4055 / 4067 / 4072 /
+4063), with cell 2 pulled up. The margin problem that blocked earlier attempts
+has largely solved itself.
+
+**The capacity registers are no longer frozen.**
+
+| | before | now |
+|---|---|---|
+| Remaining Capacity | 2142 mAh | **2050 mAh** |
+| Full Charge Capacity | 2168 mAh | **2098 mAh** |
+| Relative State of Charge | 99 % | 98 % |
+| Absolute State of Charge | 90 % | 86 % |
+| True Full Chg Q | 1532 mAh | **2087 mAh** |
+
+After being static through an entire discharge and recharge, they are updating.
+**This substantially weakens "candidate 2" (broken accumulator) from the cycle 1
+post-mortem.** `True Full Chg Q` at 2087 mAh is also converging on the ~1980 mAh
+actually measured.
+
+`QMax` remains 2400 on all cells and `QMax Passed Q` remains 0, so there is
+still no true Impedance Track learning — the movement above is estimation, not
+a Qmax update.
+
+**Still no `VCT`**, with conditions apparently satisfied: cells 4055–4072 mV
+against a 4050 mV target, current 50 mA against a 250 mA taper threshold, `DSG`
+clear.
+
+Temperature fell to 14.5 °C overnight, so `Temp Range` returned to `STL` and
+`Charging Voltage` now reads 16200 mV — the 4050 setting is active. But the band
+has now switched **twice** (`STL` → `RT` warming during charge, `RT` → `STL`
+cooling overnight). If a band change resets the termination evaluation, the
+algorithm never gets an uninterrupted run at it.
+
+### ⚠ The structural hypothesis — why this may never work as configured
+
+**`CVR` (constant-voltage region) has been clear in every single reading across
+three days.**
+
+The BQ40Z50 is designed to *command* a smart charger over SMBus using the
+`ChargingVoltage` and `ChargingCurrent` registers. This system uses a dumb
+fixed-voltage supply that ignores them entirely. Worse, lowering the target to
+16200 mV guarantees the measured pack voltage sits *above* what the gauge is
+requesting.
+
+If the gauge never recognises a constant-voltage regulation phase — and `CVR`
+says it never has — then `VCT` may be unreachable by design in this topology.
+No threshold change fixes that. The answers would be a charger the gauge can
+control, or accepting that this pack cannot self-declare termination.
+
+**This hypothesis is untested.** It is the best remaining explanation after
+thresholds, chemistry, calibration and charge state were each eliminated.
+
+---
+
+## CLOSING ENTRY — 2026-10-17: parking IT learning, moving to a PIC-side gauge
+
+### Decision
+
+Stop pursuing Impedance Track learning for now. Use the BQ40Z50 as a
+**measurement and protection device only**, and compute state of charge on the
+PIC.
+
+Rationale: testers need plausible battery reporting now, and the gauge's
+learning algorithm is fighting a hardware topology it was not designed for. An
+approximate gauge that works beats an accurate one that cannot be made to run.
+
+### What NOT to change
+
+**Leave the BQ40Z50 configuration exactly as it is.** Do not disable gauging —
+simply ignore `RSOC`, `FullChargeCapacity` and `RemainingCapacity`.
+
+Everything else the device does remains valuable and independent of the
+gauging:
+
+- COV, CUV, OCC, OCD and overtemperature protections
+- charge and discharge FET control
+- calibrated cell voltages, pack current and temperature — the inputs the
+  PIC-side gauge needs
+
+Leaving the configuration untouched also means returning to this later costs
+nothing.
+
+### What is reusable — cycle 1 was not wasted
+
+**Measured usable capacity ≈ 1980 mAh** (4.14 V/cell → 3.05 V/cell), confirmed
+two ways: by integrating measured current by hand, and by the gauge's own
+`Avg I Last Run` of −582 mA over a 3.4 hour run.
+
+**A clean discharge curve.** Cycle 1 produced an uninterrupted discharge at a
+known, slowly tapering current with cell voltages logged throughout. **That
+curve is the voltage-to-SOC table** for a PIC-side estimator — the single most
+useful input to the new approach, produced by the run that "failed".
+
+**Cell 2 is the capacity-limiting cell**, lowest at every reading across both
+cycles and first to diverge at the bottom of the curve.
+
+### Design notes for the PIC-side gauge
+
+**The map already has the destination.** `BatteryChargeState` at address 14 is
+a one-byte percentage, with `BatteryPackVoltage` at 15–16 beside it. The Jetson
+interface does not change — only how that byte is computed.
+
+**Anchoring is the thing that will bite.** Coulomb counting drifts without a
+reference. Two natural anchors are available and both are observable:
+
+- a cell reaching the terminate voltage → empty
+- current tapering below a threshold with cells near the charge voltage → full
+
+Integrate current between anchors; reset at an anchor. That is essentially what
+Impedance Track does, minus the impedance modelling this application does not
+need.
+
+**Sleep is the awkward case.** Charge consumed in deep idle cannot be counted
+if nothing is polling. But the load is now precisely known: **12 mA**, measured
+with the Jetson comms lead removed. Elapsed time × 12 mA closes the gap well
+enough.
+
+**Watch flash wear** if persisting SOC across resets — write on significant
+change or at power-down, not on every update.
+
+### Open questions for when this is revisited
+
+1. **Is the `CVR` / smart-charger hypothesis correct?** Untested, and it
+   determines whether IT learning is achievable at all in this topology.
+2. **Why did `VCT` not set when current crossed 250 mA** with `DSG` clear and
+   the voltage condition met? Never explained.
+3. **Charger output below datasheet minimum** — MP26124GR-P reading 16.55 V
+   against a 16.67 V spec floor. NTC/JEITA investigation outstanding.
+4. **`Pack Gain` calibration** out by ~1.4%.
+5. **`Term Voltage` at 2.5 V/cell averaged** — too low to ship.
+6. **Per-cell `QMax DOD0` values differ by a factor of five** (1144 / 2078 /
+   1649 / 1628). Directionally consistent with cell 2 being weakest, but the
+   magnitude is unexplained.
+7. **`TDSETV` and `FDSETV` are both clear**, so the discharge-end flags depend
+   entirely on a gauging model that has been demonstrated to be wrong by 99
+   percentage points. Enabling the voltage-based set bits would give a floor
+   that holds even when gauging is broken — worth doing for production
+   regardless of which gauge is used.
+
+### Before moving on
+
+Take a fresh data flash snapshot, so three days of configuration work is
+preserved exactly as it stands.
+
+---
+
+## Proposed PIC-side gauge — APPROACH A: coulomb counting with anchors
+
+Design sketch only; no implementation yet. Integer arithmetic throughout — the
+PIC24 has no FPU and floats have already been removed elsewhere in this project.
+
+**See the comparison at the end of this document — approach B is recommended
+to build first.**
+
+### State and units
+
+Track remaining charge in **milliamp-seconds**, not mAh, to avoid fractional
+accumulation:
+
+```
+Q_remaining  [int32, mA·s]
+1 mAh = 3600 mA·s
+Full pack ≈ 1980 mAh = 7,128,000 mA·s
+```
+
+Fits int32 (max 2.1 × 10⁹) with ~300× headroom. Convert only when reporting.
+
+### Integration step
+
+On a **fixed timer interrupt** — 1 Hz is ample, the loads change slowly — so
+Δt is exactly known rather than inferred from loop timing:
+
+```
+Q_remaining += I_mA × Δt_s
+```
+
+Current positive on charge, negative on discharge, matching the gauge.
+
+**If the I²C read fails, skip the step entirely.** A dropped sample loses one
+second of charge; a stale or zero sample corrupts the state.
+
+### Reporting
+
+```
+SOC% = (Q_remaining × 100) / (FCC_mAh × 3600)
+```
+
+Numerator stays inside int32. Clamp 0–100, write the byte to
+`BatteryChargeState` (address 14). The Jetson interface does not change.
+
+Start with **FCC = 1980 mAh** — the measured figure. That is capacity to the
+present charger's 4.14 V/cell ceiling; if the charger is fixed it rises to
+perhaps 2100–2200 mAh.
+
+### Anchors — what stops the drift
+
+Coulomb counting drifts without a reference. Both anchors are observable.
+
+**Full:**
+
+```
+if  I > 0
+and min(cell) ≥ V_full        (≈ 4050 mV; charger reaches ~4130)
+and |I| < I_taper             (≈ 100 mA)
+sustained for T_hold          (≈ 60 s)
+→ Q_remaining = FCC × 3600
+```
+
+**Empty:**
+
+```
+if  min(cell) + (I_discharge × R_cell) ≤ V_empty    (≈ 3000 mV)
+→ Q_remaining = 0
+```
+
+**Always use the minimum cell, never the pack average.** Cell 2 is the limiter
+and reaches the floor while the others still hold charge — that difference is
+real capacity which cannot be used.
+
+### IR compensation
+
+A loaded measurement is not OCV:
+
+```
+OCV ≈ V_measured + (I_discharge × R_cell)     discharging
+OCV ≈ V_measured − (I_charge × R_cell)        charging
+```
+
+Derive `R_cell` empirically — note cell voltage immediately before and after
+removing a known load, take ΔV/ΔI — rather than from the gauge's `CompRes`
+values, whose scaling is unconfirmed. Cycle 1 data suggests roughly
+**50–70 mΩ per cell**, about 35 mV at 500 mA. Small, but not negligible near
+the floor where the curve is steep.
+
+### Cold-start initialisation from OCV
+
+With no stored state, estimate from voltage once current has been low long
+enough for the reading to mean something. Lookup table of **OCV per cell →
+SOC%**, linearly interpolated.
+
+Approximate anchors from the cycle 1 discharge, IR-compensated — **fill in
+properly from the logged data**:
+
+| OCV/cell | SOC |
+|---|---|
+| 4140 mV | 100% |
+| 3950 mV | ~80% |
+| 3750 mV | ~55% |
+| 3570 mV | ~28% |
+| 3390 mV | ~16% |
+| 3100 mV | ~3% |
+| 3000 mV | 0% |
+
+The curve is flat in the middle — a 10 mV error near 3.7 V is several percent
+of SOC. **Treat OCV as a coarse starting estimate that coulomb counting then
+refines, not as a continuous source of truth.**
+
+### Sleep
+
+The PIC cannot sample while asleep, but the load is known:
+
+```
+Q_remaining -= 12 mA × t_sleep_s
+```
+
+Needs a time source across sleep — counting watchdog wakeups suffices. **This
+is the largest single error term in the design**, so re-measure the 12 mA
+figure carefully, with the Jetson comms lead removed.
+
+### Persistence
+
+Store `Q_remaining` and `FCC`. Write on **significant change** (~every 5%) and
+at power-down. Never every update — flash endurance is ~10k cycles per page.
+
+⚠ `PERSIST_SaveFromEeprom()` currently mirrors all 256 bytes including live
+measurement fields, which change constantly, so its "has anything changed?"
+guard never fires and **every call burns an erase cycle**. Either narrow
+`PERSIST_MIRROR_FIRST`/`PERSIST_MIRROR_BYTES` to the configuration region as
+`persist_store.h` suggests, or use `PERSIST_SetByte()` directly.
+
+### Expected accuracy and known limits
+
+Within a few percent over a cycle, provided the anchors fire. The current
+measurement is already verified against a meter at two points, which is the
+foundation everything else rests on.
+
+Error sources, largest first:
+
+1. **Sleep-time estimation**
+2. **Temperature** — a cold pack delivers noticeably less than `FCC` assumes
+3. **Ageing** — `FCC` is fixed unless logic is added to update it when a
+   full-to-empty run completes between two anchors. That is the natural place
+   for later refinement, and amounts to a crude Qmax learn of our own.
+
+**What this gives up:** no impedance model, so no prediction of sag under load.
+"Time to empty" under heavy load will read optimistic. For a percentage
+display, acceptable.
+
+---
+
+## APPROACH B: voltage lookup with load compensation
+
+### The key realisation
+
+There is **real-world logged data** from a unit running at full load supporting
+the Jetson, with battery voltage recorded periodically against timestamps.
+
+With a roughly constant load, **elapsed time is proportional to charge
+delivered**, so that log converts directly into a voltage → SOC table:
+
+```
+SOC at time t  =  1 − (t / t_total)
+```
+
+The curve already exists. No coulomb counting is needed to build it, and none
+is needed to use it. Because it is measured **at the actual operating load**,
+the normal case needs no IR compensation at all — terminal voltage under
+typical load maps straight to SOC.
+
+### Three reported states
+
+Use `/ACOK` on RA7 for charger presence — a hardware signal, so charging
+detection does not depend on inferring a current sign. That is precisely where
+the BQ40Z50 kept failing against its 50 mA threshold.
+
+| state | condition | reported |
+|---|---|---|
+| **charging** | `/ACOK` asserted, not yet terminated | "charging", no percentage |
+| **charged** | termination detected | reset to 100% |
+| **discharging** | `/ACOK` deasserted | voltage-derived percentage |
+
+Reporting a state rather than a number while charging avoids lying: during
+charge the voltage is elevated by IR and by the charge profile, so a
+voltage-derived SOC would read falsely high.
+
+### Load deviation correction
+
+The curve is only valid at the load it was measured at. When the lasers switch
+or the Jetson's draw changes, terminal voltage moves without SOC changing.
+Reference back to the curve's load:
+
+```
+V_corrected = V_measured − (I_actual − I_reference) × R_pack
+```
+
+At 50–70 mΩ per cell that is ~35 mV per 500 mA of deviation — several percent
+of SOC in the flat region. This is the only modelling approach B needs.
+
+### Filtering and monotonic reporting
+
+Instantaneous readings jitter, and without smoothing the display bounces —
+worse, it climbs when a load drops off, which reads as a fault.
+
+- 30–60 second average
+- **reported value may only decrease while discharging**, resetting on charge
+
+### Use the minimum cell
+
+Not the pack average. Cell 2 is the limiter and reaches the floor while the
+others still hold charge.
+
+### Known weak points
+
+**The flat middle.** Between roughly 3.7 and 3.9 V/cell a handful of millivolts
+spans several percent of SOC. Resolution is not the problem (1 mV
+measurement) — load variation and noise are. Expect good accuracy at both ends
+and vagueness in the middle; do not over-promise.
+
+**Surface charge.** A pack just off the charger reads high for a while. If a
+charge is interrupted before termination, estimation starts at the worst
+possible moment and will over-read. Either hold the last state briefly after
+`/ACOK` drops, or apply a decay correction for the first few minutes.
+
+**Interrupted charge** is the genuine gap: not charging, not terminated,
+voltage still elevated. Decide deliberately what that reports rather than
+letting it fall through to a wrong number.
+
+---
+
+## COMPARISON — A vs B
+
+They fail in opposite ways, which is what makes the choice clear.
+
+### Where each is accurate
+
+**A (coulomb)** is excellent in the flat middle of the curve, exactly where B
+is useless. It tracks short-term change precisely and does not care that
+3.75 V and 3.78 V are 20% of SOC apart.
+
+**B (voltage)** is good at both ends where the curve is steep, and vague in the
+middle. But it **never drifts** — every reading is independent, so error is
+bounded by curve accuracy rather than accumulating.
+
+### Where each fails — and why it matters here
+
+**A fails silently and cumulatively**, and it **inherits the exact failure mode
+that defeated the BQ40Z50**: correctness depends on an anchor firing, and three
+days of this document establish that reliable full-charge termination detection
+on this hardware is genuinely hard. If the anchor does not fire, drift is
+unbounded and nothing reports it.
+
+**The offset problem is worse than it looks.** Coulomb counting error is
+dominated by *offset*, not gain. The gain is verified at two points — but a
+2 mA zero-offset error integrates to **48 mAh/day (~2.4% of the pack), ~17%
+over a week of standby**. Gain calibration does not help; only offset
+calibration does, and it was never checked.
+
+**B fails loudly and transiently.** A wrong reading is wrong for one sample,
+then self-corrects. It cannot walk away from reality.
+
+### Practical differences
+
+| | A — coulomb | B — voltage |
+|---|---|---|
+| state to persist | `Q_remaining`, `FCC` | none |
+| behaviour after a reset | needs stored state, else falls back to a voltage guess anyway | immediate, correct |
+| sleep accounting | **required — largest error term** | irrelevant |
+| flash wear | yes | none |
+| depends on an anchor firing | **yes** | no |
+| flat middle of curve | good | poor |
+| CPU / flash cost | moderate | light |
+
+The reset row matters more than it appears: PuttingGate resets for firmware
+updates and bootloader handoff, and **a coulomb counter without valid stored
+state must initialise from a voltage lookup anyway** — so B ends up being
+built regardless, as a subsystem of A.
+
+### Ageing and temperature
+
+Both degrade, differently.
+
+**A's `FCC` becomes wrong as the pack ages**, so the percentage quietly becomes
+a percentage of the wrong number.
+
+**B's curve also shifts — but its endpoints stay anchored by physics.** An aged
+pack still reads 0% when genuinely empty, which is the number that matters
+operationally. That is a real robustness advantage.
+
+**Temperature hurts B more**: a cold pack sags, so B under-reports. Worth a
+correction term eventually, or a second curve at low temperature.
+
+### The synthesis, for later
+
+They are complementary rather than competing. Voltage provides the absolute
+reference; coulomb counting interpolates between voltage readings, smoothing
+the flat middle and removing jitter:
+
+```
+SOC = α · SOC_coulomb + (1 − α) · SOC_voltage
+```
+
+with α high in the flat region and low near the ends — equivalently, integrate
+current short-term and let it decay toward the voltage estimate with a long
+time constant. No unbounded drift, because voltage keeps pulling it back.
+
+But it reintroduces state, sleep accounting and persistence.
+
+### ✅ Recommendation
+
+**Build B first.** Stateless, self-correcting, survives resets, ignores sleep
+entirely, and the characterisation data already exists.
+
+Ship it, see whether the vagueness in the middle actually troubles anyone, and
+add the coulomb term as a refinement only if it does.
+
+The failure mode of starting with A is spending a week on sleep accounting and
+anchor detection to solve a problem the users may not have — and doing it with
+an uncalibrated current offset, on hardware that has already proven hostile to
+anchor detection.
+
+---
+
+## FIELD CHARACTERISATION — voltage vs SOC from real usage
+
+Derived from a real unit supporting the Jetson at full load, logged
+periodically with timestamps.
+
+**Source data:** `field_discharge_log_2026-10-14_16.csv` (554 samples,
+2026-10-14 11:49 → 2026-10-16 08:00)
+**Derivation:** `derive_lut.py` — rerun it if the capacity assumption changes.
+
+### Method
+
+With a roughly constant load, elapsed time is proportional to charge
+delivered, so the timestamped log converts straight into a voltage → SOC
+table:
+
+```
+SOC at time t  =  1 − (t / t_total)
+```
+
+### The discharge window
+
+| | |
+|---|---|
+| Window | 2026-10-15 11:15:35 → 16:59:52 |
+| Start | 16.628 V (float voltage — full) |
+| End | 13.337 V, logged `graceful shutdown` |
+| Duration | **5 h 44 m** (5.738 h) |
+
+Two `graceful shutdown` events in the log, at 13.308 V (10-14) and 13.337 V
+(10-15) — so the system's own low-battery cutoff sits at about **3.33 V/cell**,
+well above the cell floor.
+
+### ⚠ Average current — depends on an assumption that is probably wrong
+
+At the assumed 2400 mAh: **418 mA** (≈ C/5.7, ~6.3 W at 15 V).
+
+**But the bench data contradicts 2400 mAh.** Cycle 1 measured ~1980 mAh down
+to 3.05 V/cell. This run stops at **3.334 V/cell**, well above that, so it used
+*less* — probably nearer 1850 mAh, giving an average current of about
+**320 mA**.
+
+Honest range: **320–420 mA**, with the lower end better supported.
+
+**One logged current reading from a running unit would settle this and pin
+down the whole model.** Worth capturing next time one is on the bench.
+
+### 16-point LUT — even 160 mAh steps
+
+| idx | SOC % | used mAh | pack V | V/cell |
+|---:|---:|---:|---:|---:|
+| 0 | 100.0 | 0 | 16.628 | 4.157 |
+| 1 | 93.3 | 160 | 16.401 | 4.100 |
+| 2 | 86.7 | 320 | 16.174 | 4.044 |
+| 3 | 80.0 | 480 | 15.947 | 3.987 |
+| 4 | 73.3 | 640 | 15.720 | 3.930 |
+| 5 | 66.7 | 800 | 15.493 | 3.873 |
+| 6 | 60.0 | 960 | 15.266 | 3.817 |
+| 7 | 53.3 | 1120 | 15.043 | 3.761 |
+| 8 | 46.7 | 1280 | 14.821 | 3.705 |
+| 9 | 40.0 | 1440 | 14.632 | 3.658 |
+| 10 | 33.3 | 1600 | 14.443 | 3.611 |
+| 11 | 26.7 | 1760 | 14.301 | 3.575 |
+| 12 | 20.0 | 1920 | 14.140 | 3.535 |
+| 13 | 13.3 | 2080 | 13.915 | 3.479 |
+| 14 | 6.7 | 2240 | 13.678 | 3.420 |
+| 15 | 0.0 | 2400 | 13.337 | 3.334 |
+
+### ⚠ Entries 1–6 are interpolation, not measurement
+
+**There is a 143-minute hole in the log** between 11:15 (16.628 V) and 13:38
+(15.217 V) — **995 mAh, 41% of the discharge, with no samples**. Those LUT
+entries are a straight line drawn across it.
+
+The 10-15 09:00 fragment suggests the real curve there is *flatter* than the
+straight line, with a steeper drop in the first minutes off float as surface
+charge dissipates. So expect the LUT to **over-read SOC just below 16.6 V and
+under-read around 16.1 V**.
+
+**One properly logged full discharge fixes this** — log at 1-minute intervals
+from float all the way to shutdown, with no gaps, and rerun `derive_lut.py`.
+
+A second caveat on entry 0: the 11:15 sample is at float voltage, so the pack
+may still have been on charge at that moment and the discharge may have begun
+later. That would make the real average current higher and compress the top of
+the curve further.
+
+### As a function, if a LUT is not wanted
+
+The measured region is close to linear:
+
+```
+20% ≤ SOC ≤ 58%:   SOC = 20.4 + (V_pack − 14.144) / 0.0280
+SOC < 20%:         SOC = (V_pack − 13.337) / 0.0396
+```
+
+**Prefer the LUT with linear interpolation.** Same cost in practice, and it
+handles the curved ends honestly rather than pretending they are straight.
+
+### 🔑 The number that sizes the load-compensation problem
+
+**27–28 mV of pack voltage per 1% SOC** through the usable middle.
+
+A 500 mA change in load shifts pack voltage by roughly 105 mV across the pack
+resistance — **nearly 4% of SOC**. Without load compensation that is the error
+floor, and it is far larger than anything the table's resolution contributes.
+
+This is the single strongest argument for implementing the `V_corrected`
+term in approach B rather than treating it as optional.
+
+---
+
+## PACK RESISTANCE AND THE IR-CORRECTED (QUASI-OCV) TABLE
+
+### The governing relationship
+
+```
+V_terminal = OCV(SOC) − I·R(SOC,T) − V_polarisation
+```
+
+Analytical forms for `OCV(SOC)` exist — Shepherd, Nernst, and Plett's combined
+model (which is linear in its coefficients, so it fits by ordinary least
+squares). **None is worth using here.** On a PIC24 with no FPU you would call
+`ln()` to reproduce a curve already measured, and the LUT is both cheaper and
+exactly faithful to the data.
+
+What *is* worth doing is removing the load term, so the table works at any
+load rather than only at the one it was characterised at.
+
+### R, measured from four load-step events in the log
+
+The log contains four moments where the load changes abruptly. Each gives a
+voltage step, and the step divided by the current change is the resistance.
+
+| event | ΔV | current | R |
+|---|---|---|---|
+| 10-14 12:33:42→12:34:05 shutdown, load off (23 s) | 299 mV | ~418 mA | **0.71 Ω** |
+| 10-15 16:59:52→17:01:26 shutdown, load off (94 s) | 350 mV | ~418 mA | 0.84 Ω |
+| 10-14 16:01:01→16:02:02 charge resumes (61 s) | 291 mV | ~800 mA | **0.36 Ω** |
+| 10-15 09:38:42→09:39:43 charge resumes (61 s) | 313 mV | ~850 mA | **0.37 Ω** |
+
+Two clean clusters: **~0.37 Ω at high SOC, ~0.71 Ω near empty** — the expected
+shape, resistance rising as the pack empties. The 0.84 Ω figure is from a 94 s
+window, so it includes more diffusion than the 23 s one; prefer 0.71 Ω.
+
+R model used below — two measured anchors, flat above the knee:
+
+```
+R = 0.37 Ω                                for SOC ≥ 30%
+R = 0.37 + (30 − SOC)/30 × 0.34  Ω        for SOC < 30%
+```
+
+### IR-corrected table
+
+`V_OCV = V_loaded + I·R(SOC)`, at the 418 mA characterisation current.
+
+| SOC % | loaded V | R Ω | IR mV | **quasi-OCV V** | **V/cell** |
+|---:|---:|---:|---:|---:|---:|
+| 100.0 | 16.628 | — | — | **16.628** | 4.157 |
+| 93.3 | 16.401 | 0.37 | 155 | **16.556** | 4.139 |
+| 86.7 | 16.174 | 0.37 | 155 | **16.329** | 4.082 |
+| 80.0 | 15.947 | 0.37 | 155 | **16.102** | 4.025 |
+| 73.3 | 15.720 | 0.37 | 155 | **15.875** | 3.969 |
+| 66.7 | 15.493 | 0.37 | 155 | **15.648** | 3.912 |
+| 60.0 | 15.266 | 0.37 | 155 | **15.421** | 3.855 |
+| 53.3 | 15.043 | 0.37 | 155 | **15.198** | 3.799 |
+| 46.7 | 14.821 | 0.37 | 155 | **14.976** | 3.744 |
+| 40.0 | 14.632 | 0.37 | 155 | **14.787** | 3.697 |
+| 33.3 | 14.443 | 0.37 | 155 | **14.598** | 3.649 |
+| 26.7 | 14.301 | 0.41 | 170 | **14.471** | 3.618 |
+| 20.0 | 14.140 | 0.48 | 202 | **14.342** | 3.586 |
+| 13.3 | 13.915 | 0.56 | 234 | **14.149** | 3.537 |
+| 6.7 | 13.678 | 0.63 | 265 | **13.943** | 3.486 |
+| 0.0 | 13.337 | 0.71 | 297 | **13.634** | 3.408 |
+
+Entry 0 takes no correction — 16.628 V is a float reading at near-zero
+current, so it is already approximately OCV.
+
+The mid-range values are physically plausible for LiCoO2: 3.855 V/cell at 60%,
+3.697 at 40%. That is a useful independent check that nothing is badly wrong.
+
+Runtime use:
+
+```
+SOC = LUT_quasiOCV( V_measured + I_discharge × R(SOC) )
+```
+
+R depends on SOC, which is what you are solving for — so use the previous
+iteration's SOC, or do one pass with R = 0.37 Ω and a second with the
+corrected value. At 1 Hz this converges instantly.
+
+### ⚠ This is IR-corrected, NOT true rested OCV
+
+At the shutdown point, the pack read 13.337 V under load. After **15 hours of
+rest** it read **13.942 V**. The IR correction only accounts for 297 mV of
+that 605 mV recovery.
+
+**The remaining 308 mV is diffusion polarisation** — the slow term — and it is
+not an error in R. The fast ohmic step really is 299 mV, measured over 23
+seconds; the rest takes hours to appear.
+
+Two consequences that matter:
+
+**The table over-reads on a rested pack.** Feed the 15-hour rested reading of
+13.942 V into the quasi-OCV table and it returns **6.7% SOC**, when the pack
+was in fact at the shutdown point — defined here as 0%. So after the unit has
+sat idle, expect roughly **+7% optimism** until it has been under load for a
+while. Cold-start initialisation should allow for this.
+
+**Sustained load changes drift further than R predicts.** The instantaneous R
+handles a load step correctly for the first seconds. If the new load persists,
+polarisation builds and the voltage drifts further in the same direction. The
+total effective resistance at the bottom is about **1.45 Ω** (605 mV ÷ 418 mA),
+roughly double the instantaneous figure.
+
+### What one measurement would fix
+
+A mid-SOC load step with the current logged — pack voltage immediately before
+and after a known change, at say 50% SOC — would confirm the 0.37 Ω figure
+directly rather than inferring it from charge-resume events where the current
+is assumed.
+
+### Smaller effects, deliberately ignored
+
+- **Peukert's law** — exponent ~1.05 for Li-ion, worth about a percent over
+  this load range. Ignore.
+- **OCV hysteresis** — 10–20 mV higher after charging than after discharging
+  at the same SOC. A discharge-derived curve therefore slightly over-reads
+  following a charge.
+- **Temperature** — acts mainly through R, which roughly doubles from 25 °C to
+  0 °C. Since R is now the term being corrected for, that is where a
+  temperature coefficient would go.

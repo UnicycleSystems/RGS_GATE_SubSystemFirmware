@@ -136,8 +136,21 @@ static uint8_t ChargeThresholdNow; // thus indicates which to test against
 
  static uint8_t VoltageCriticalCount;
  static uint8_t ChargeCriticalCount;
- 
- 
+
+/* Progress indication while the battery pack is being reconfigured, which
+ * takes the best part of ten seconds. Called once per golden-table entry via
+ * BQ40Z50_ProgressHook, so it blinks at roughly the rate entries are written.
+ *
+ * Toggles RED only, leaving GREEN lit: steady green is "running", green with
+ * a blinking red is "busy, do not pull the power". Entries already correct
+ * are skipped without a 200 ms flash write, so the blink runs fast through
+ * those and slow through the ones actually being written - which is a fair
+ * representation of what is happening. */
+static void BatteryConfigTick(void)
+{
+    BI_LED_RED_Toggle();
+}
+
 
 int main(void)
 {
@@ -314,6 +327,48 @@ int main(void)
      * restart, until something clocks it out. BringUp does the same. */
     i2c2_bus_unwedge();
     LIS2DW12_Init_I2C2();    // TODO: should ensure it inits, or returns an error
+
+    /* ---- Battery pack configuration ------------------------------------
+     * Placed here because i2c2_bus_unwedge() above is the precondition for
+     * any I2C2 traffic, and because nothing between here and the main loop
+     * depends on the pack.
+     *
+     * Runs on a WARM boot as well as a cold one. A warm boot is the hand-over
+     * after a firmware update, which is exactly when the configuration
+     * version may have changed; skipping it there would leave an update that
+     * alters battery parameters inert until the next cold start.
+     *
+     * The common path is cheap: three data flash reads to check the stamp,
+     * two more for the gain. A pack whose stamp does not match is fully
+     * reconfigured, which takes the best part of ten seconds - 25 entries at
+     * BQ_T_DF_WRITE_MS (200 ms) each. That happens once per configuration
+     * version per pack. The watchdog survives it because bq_delay_ms() clears
+     * it every millisecond, but the user would otherwise see an unexplained
+     * pause, so the red LED blinks against the steady green throughout.
+     *
+     * One attempt, no retry loop - the driver does its own bus recovery. If
+     * the pack does not answer, the apply is skipped entirely and the next
+     * boot tries again. A gate that will not start because the gauge was
+     * asleep is a worse failure than one running on unverified config. */
+    {
+        bool stamped = false;
+
+        if (BQ40Z50_CheckConfigStamp(&stamped) == BQ_OK && !stamped)
+        {
+            BQ40Z50_ProgressHook = BatteryConfigTick;
+            if (BQ40Z50_ApplyGoldenImage() == BQ_OK)
+                BQ40Z50_WriteConfigStamp();   /* stamp LAST, and only if clean */
+            BQ40Z50_ProgressHook = NULL;
+            BI_LED_RED_SetLow();              /* undo whatever the blink left */
+        }
+
+        /* Unconditional, every boot, stamped or not. The gains are table
+         * entries too, but the table is only consulted when the stamp
+         * mismatches - this is what catches a gain that goes bad on a pack
+         * already marked as configured. Two reads, no writes, in the normal
+         * case. */
+        (void)BQ40Z50_EnsureSenseGain();
+    }
   //  uint8_t id = 0x00;
 
   //BI_LED_RED_SetHigh();BI_LED_RED is RED!!!!!
@@ -912,46 +967,34 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
 
     /* Same as the voltage read above: reached only when a read succeeded, by
      * either route, so a successful retry is no longer thrown away. */
-    EMULATE_EEPROM_Memory[BatteryChargeState_Addr] = raw[0];  /* percent */
+ 
+    /* Instantaneous pack current, mA, SIGNED - negative is discharge. Byte
+     * order matches the voltage store above: SMBus returns LSB first, so
+     * raw[0] goes to the lower address.
+     *
+     * Same read-unwedge-retry as the voltage read, but it deliberately does
+     * NOT return early on failure. Nothing below depends on the current, and
+     * an early return would skip the ClrWdt() that follows. A failed read
+     * leaves the previously published value in place, which is stale rather
+     * than wrong.
+     *
+     * Reuses raw, so any future RSOC store must happen BEFORE this point. */
+    bool gotCurrent = i2c2_read_regs(BQ40Z50_I2C_ADDRESS, BQ_CMD_CURRENT, raw, 2);
+    if (!gotCurrent)
+    {
+        i2c2_bus_unwedge();
+        gotCurrent = i2c2_read_regs(BQ40Z50_I2C_ADDRESS, BQ_CMD_CURRENT, raw, 2);
+    }
 
-    FuelGuagePercent = raw[0];
-//#define CheckFuelGuage    
-#ifdef CheckFuelGuage
-    if (FuelGaugPercent<(ChargeThresholds[VoltageThresholdNow]))  //12v is a nominal, test figure, 3V per cell
+    if (gotCurrent)
     {
-        
-        if(ChargeThresholdNow>=4)
-        {
-           warning|=LowBatteryCritical; 
-            
-            if(ChargeCriticalCount>=3)
-                warning|=PowerOff_1_min;
-                
-            
-            ChargeCriticalCount++;
-        }
-        else
-        {
-            warning|=LowBatteryWarning;//May get modified to  critical 
-            ChargeThresholdNow++;
-        }
-           
+        EMULATE_EEPROM_Memory[Current_mA_LSB] = raw[0];  /* LSB */
+        EMULATE_EEPROM_Memory[Current_mA_MSB] = raw[1];  /* MSB */
     }
-    
-    
-    
-    
-    //Quick sanity check if voltage gone up again recently - ie has previously passed at least two thresholds, but is now above the higher threshold, then call it all off
-    if ( (FuelGuagePercent>=(ChargeThresholds[0])) && (ChargeThresholdNow>=2) )  
+    else
     {
-        ChargeThresholdNow=0;
-        CriticalCount=0;
-        warning&=~LowBatteryWarning;
-        warning&=~LowBatteryCritical;
+        warning |= BatteryPackCommsFailure;
     }
- #endif  
-    
-    
     
             
     ClrWdt();

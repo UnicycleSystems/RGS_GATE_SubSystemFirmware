@@ -438,3 +438,236 @@ leaves everything else alone.
 The protection and temperature limits above are **not** in the firmware table —
 `bq_golden[]` deliberately holds only the minimum-safe baseline. They belong in
 the host-side image, per the architecture decision.
+
+---
+
+# 2026-11-02 — the FIELD APPLICATION now configures the pack itself
+
+Until now only the bring-up jig could configure a pack. PuttingGate now does it
+too, on every boot, without a jig and without an operator.
+
+## Why this was judged safe
+
+The concern was obvious: writing configuration in the field fights the gauge's
+own learning, and `bq_seed_qmax_if_default()` already documents how
+catastrophic "write whenever it differs" is when applied to a learned value.
+
+**It is safe because every entry in `bq_golden[]` is static configuration.** Not
+one is a value the gauge maintains for itself — Qmax, Ra tables, Update Status,
+cycle count and the DOD figures are all outside the table, deliberately. So
+applying it is **idempotent**: a pack already configured has no differences,
+nothing is written, nothing is reset.
+
+That property is load-bearing, so it is now written at the head of the table as
+an invariant: *nothing the gauge updates by itself may appear here.* Break that
+and a single boot destroys learning across the whole fleet.
+
+The firmware-update case is better than merely tolerable. If an update changes
+Design Capacity or Term Voltage, the reapply **does** reset learning — and
+should, because learning measured against the old parameters was invalidated
+the moment they changed.
+
+## The configuration stamp
+
+Rather than verify 25 entries on every boot, the pack is stamped with which
+configuration put it there.
+
+Stored in **Manufacturer Info Block A, DF `0x4041`** (TRM Table 15-1). TI ships
+that block holding `0x61,0x62,0x63…` — ASCII `"abc…"` — so a virgin pack reads
+magic as `0x6162` and can never be mistaken for stamped. Nothing else in this
+product uses the block. The length byte at `0x4040` is left at its default 32.
+
+| offset | bytes | contents |
+|---|---|---|
+| +0 | 2 | magic `0x5247` (`'RG'`) |
+| +2 | 1 | `BQ_CONFIG_VERSION` |
+| +3 | 2 | CRC-16 fingerprint of `bq_golden[]` |
+
+**The magic is not decoration.** Without it a blank info block of zeros could
+match a zero CRC and a virgin pack would skip configuration entirely.
+
+**The version is bumped by hand** and is the human-readable statement of intent.
+**The CRC catches the case where someone edits the table and forgets to bump
+it** — CRC-16/CCITT-FALSE over address, size, flags and value of every entry.
+Names are excluded, so a typo fix does not force a fleet-wide reconfiguration.
+Verified against the standard check vector (`"123456789"` → `0x29B1`) and
+against every single-bit flip in a 200-byte sample.
+
+**Write order matters.** The stamp is written after a successful apply, and
+within the stamp the magic goes **last**, because it is the validity marker. An
+interruption then leaves the stamp reading as absent and the pack reconfigures
+next boot — wasteful but correct. Written first, an interruption would leave a
+pack permanently claiming a configuration it does not have.
+
+`BQ40Z50_CheckConfigStamp()` returns a status *and* a flag, deliberately:
+"stamp mismatched" and "pack did not answer" need different responses, and
+reconfiguring a pack that cannot be read just fails 25 more times.
+
+## Sense gain — now enforced absolutely
+
+The gains were previously repaired only when **implausible**, outside a 0.1–5.0
+band. That band existed to protect a per-pack calibration.
+
+**There is no per-pack calibration, so the band was testing the wrong thing.**
+It tolerated a gain of 0.60 — 30% out, and wrong in the direction that makes a
+current reading look entirely believable.
+
+Both gains are now **ordinary `bq_golden[]` entries** at exactly
+`BQ_GAIN_NOMINAL_BITS` (0.87, `0x3F5EB852`), written whenever they differ like
+everything else. This required widening the table to 4-byte entries
+(`value` is now `uint32_t`, with a `size == 4` path through read and write).
+
+The reason that mattered: **as table entries the gains are inside the CRC.**
+Change the nominal in a future release and every stamped pack in the field
+notices and reapplies. Left outside the table as a special case, a changed
+nominal would have been invisible to the stamp and no deployed pack would ever
+have picked it up.
+
+⚠ **When per-pack factory calibration arrives, the gains must come OUT of the
+table** and revert to a conditional form, or provisioning will overwrite every
+calibration it meets. Noted beside the entries.
+
+`BQ40Z50_EnsureSenseGain()` additionally runs **unconditionally on every boot**,
+outside the stamp gate — two 4-byte reads, exact comparison, writes only on a
+mismatch. The stamp means nothing else is ever re-verified, so this is the
+single ongoing integrity check the sub-system performs. It exists because a
+wrong gain is the one fault that corrupts every current reading while looking
+plausible.
+
+## Boot sequence in PuttingGate
+
+Placed immediately after `LIS2DW12_Init_I2C2()`, which is itself after
+`i2c2_bus_unwedge()` — the documented precondition for any I2C2 traffic.
+
+```c
+bool stamped = false;
+if (BQ40Z50_CheckConfigStamp(&stamped) == BQ_OK && !stamped)
+{
+    BQ40Z50_ProgressHook = BatteryConfigTick;
+    if (BQ40Z50_ApplyGoldenImage() == BQ_OK)
+        BQ40Z50_WriteConfigStamp();
+    BQ40Z50_ProgressHook = NULL;
+    BI_LED_RED_SetLow();
+}
+(void)BQ40Z50_EnsureSenseGain();
+```
+
+**Runs on warm boots too.** A warm boot is the hand-over after a firmware
+update — precisely when the configuration version may have changed. Skipping it
+there would leave such an update inert until the next cold start.
+
+**One attempt, no retry loop.** The driver does its own bus recovery. If the
+pack does not answer the apply is skipped and the next boot tries again. A gate
+that will not start because the gauge was asleep is a worse failure than one
+running on unverified configuration.
+
+| path | cost |
+|---|---|
+| stamped pack (the common case) | 5 DF reads, ~25 ms |
+| virgin pack | magic mismatch on the first read, then reconfigure |
+| **reconfigure** | **up to ~10 s** |
+
+`BQ_T_DF_WRITE_MS` is **200 ms** and a full apply writes 25 entries plus the
+stamp. The watchdog survives — `FWDTEN=ON`, `WDTPS=PS512` gives ~2.1 s, and
+`bq_delay_ms()` clears it every millisecond — but the unit would otherwise sit
+silent for ten seconds looking hung.
+
+So the **red LED blinks against the steady green** throughout, via
+`BQ40Z50_ProgressHook`, called once per table entry. Steady green is running;
+green with blinking red is busy, do not pull the power. The hook is NULL by
+default so the jig is unaffected (it reports over UART instead), and red is
+explicitly driven low afterwards since an odd number of toggles would leave it
+stuck on.
+
+## `BQ_VERBOSE` — one driver, two builds
+
+`bq40z50.c` was written for the jig and reports heavily over UART1. PuttingGate
+never initialises UART1, so carrying that reporting would be worse than
+useless: `bq_print()` waits up to **100 ms per character** for a TX-ready that
+never comes, across 231 call sites. A single status line would take minutes.
+
+`BQ_VERBOSE` selects it. **No default — an `#error`.** Defaulting on risks a
+field build inheriting it; defaulting off risks the jig silently losing its
+console. Both projects now declare their intent as a preprocessor macro in
+`configurations.xml`, alongside the existing `STANDALONE_BUILD`:
+
+| project | value |
+|---|---|
+| `RGS_BringUp.X` | `BQ_VERBOSE=1` |
+| `PuttingGate.X` | `BQ_VERBOSE=0` |
+
+The no-op forms are **macros expanding to `((void)0)`, not empty functions.** An
+empty function still takes its `const char *`, so every literal is still
+emitted. Expanding to nothing leaves them unreferenced and the linker drops
+them — which is where nearly all of the saving comes from.
+
+**Consequence: arguments are not evaluated when verbose is off.** Audited — only
+`BQ40Z50_SecurityMode()` was ever called from inside a print argument, at two
+sites, both now in guarded blocks. The 24 other apparent hits were a regex
+matching text *inside* the string literals.
+
+Measured on BringUp, which has the driver either way:
+
+| | program memory |
+|---|---|
+| `BQ_VERBOSE 1` | 57,969 |
+| `BQ_VERBOSE 0` | 50,505 |
+| **saving** | **7,464 bytes** |
+
+A further **3,387 bytes** came from guarding the reporting tail itself —
+`ReportStatus`, `ReportGoldenImage` and `bq_print_fail`, 639 lines and 31% of
+the file. With verbose off their print calls vanished but the bodies still
+linked and still performed 20 device reads, gathering values to throw away.
+Everything from `BQ40Z50_ReportGoldenImage` to end of file is now guarded, with
+a banner saying nothing load-bearing may be added below that line.
+
+**Total `BQ_VERBOSE` saving: 10,851 bytes.** Adding the driver to PuttingGate
+cost **6,414** rather than 17,265.
+
+## Flash
+
+| | bytes | |
+|---|---|---|
+| PuttingGate before | 38,802 | 59% |
+| **PuttingGate now** | **46,197** | **70%** |
+| BringUp | 58,488 | 89% |
+
+~18 KB free. Both projects at 6 warnings, all pre-existing.
+
+## Pack current published to the Jetson
+
+`GetBattVolts()` now also reads `BQ_CMD_CURRENT` (0x0A) and publishes it to the
+emulated EEPROM at **21 (LSB) / 22 (MSB)**, refreshed every 2 s.
+
+The value is **signed** — negative is discharge. Anything reading those two
+bytes must treat them as `int16`, or a discharging pack reads as roughly 65 A.
+
+Unlike the voltage and RSOC reads it does **not** return early on failure:
+nothing below it depends on the current, and an early return would skip the
+`ClrWdt()` that follows. A failed read leaves the last value in place.
+
+⚠ It reuses `raw`, so any future RSOC store must happen **before** it.
+
+The defines initially collided with `FirmwareVersionMSBAddr` (address 20) and
+would have overwritten the firmware version every two seconds; and
+`Current_mA_MSB(` without a space was a function-like macro that the map
+converter rejected outright.
+
+`SubSystemFirmware/tools/RGS_PG_CurrentMonitor.py` watches it from the Jetson,
+refreshed in place. It guards against torn reads — the two bytes come from
+separate transactions and the PIC rewrites them every 2 s, so it re-reads the
+LSB and requires a match — and cross-checks its addresses against the published
+map.
+
+## Open
+
+- **Neither project's version has been bumped**, so `release_build` cannot
+  publish either. Both have changed.
+- The published EEPROM map predates the `Current_mA_*` defines; the monitor
+  script reports this and falls back to built-in addresses.
+- Per-pack gain calibration, when it arrives, requires the gains to leave
+  `bq_golden[]` — see above.
+- **Sealing** will break all three write paths (table, stamp, gain). Deferred
+  deliberately; packs are unsealed for now.
+- Full periodic verification is a Jetson-side job for later; the PIC
+  deliberately does not re-verify beyond the gain.

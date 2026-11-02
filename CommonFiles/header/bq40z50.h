@@ -250,6 +250,13 @@
 #define BQ_DF_CC_GAIN             0x4006  /* 4 bytes */
 #define BQ_DF_CAPACITY_GAIN       0x400A  /* 4 bytes */
 
+/* System Data / Manufacturer Data. 32 bytes at 0x4041, with a length byte at
+ * 0x4040. TI ships it holding 0x61,0x62,0x63... - ASCII "abc..." - so a
+ * virgin pack reads magic as 0x6162 and can never be mistaken for stamped.
+ * Nothing else in this product uses the block. */
+#define BQ_DF_MFG_INFO_A_LENGTH   0x4040  /* 1 byte, default 32 - left alone */
+#define BQ_DF_MFG_INFO_A          0x4041  /* 32 bytes */
+
 /* Temperatures are stored in 0.1 K. 2732 = 0 C, so 45 C is 3182. */
 #define BQ_DEGC_TO_01K(c)         ((uint16_t)(((int16_t)(c) * 10) + 2732))
 
@@ -506,7 +513,9 @@ typedef enum
  * incomplete image can never masquerade as a verified one. */
 BQ_STATUS   BQ40Z50_VerifyGoldenImage(uint8_t *mismatches, uint8_t *unset);
 BQ_STATUS   BQ40Z50_ApplyGoldenImage(void);
+#if BQ_VERBOSE          /* reporting only - absent from the field build */
 void        BQ40Z50_ReportGoldenImage(void);
+#endif
 
 /* Cheap "has this pack been through the jig already?" test - one DF read.
  * Lets the caller branch around BQ40Z50_BringUp() when there is nothing to do. */
@@ -528,6 +537,67 @@ BQ_STATUS   BQ40Z50_ReadMAC32(uint16_t subcmd, uint32_t *value);
  * deliberately ignores values that are wrong but not absurd. */
 BQ_STATUS   BQ40Z50_SetSenseGain(void);
 
+/* Unconditional sense-gain check for the field application's boot path.
+ * Two 4-byte reads, writes only if a gain is not exactly the nominal. The
+ * gains are also bq_golden[] entries, but those are only checked when the
+ * configuration stamp triggers a reapply - this is what catches a gain that
+ * goes bad on an already-provisioned pack. */
+BQ_STATUS   BQ40Z50_EnsureSenseGain(void);
+
+/* ---------------- Configuration stamp ----------------
+ *
+ * A pack is stamped, after a successful apply, with which configuration put
+ * it there. The boot path reads the stamp, and only reconfigures when it does
+ * not match - turning 25 data flash reads into one short block read.
+ *
+ * Layout, in the gauge's Manufacturer Info block:
+ *
+ *     byte 0-1   magic    BQ_STAMP_MAGIC, big endian
+ *     byte 2     version  BQ_CONFIG_VERSION
+ *     byte 3-4   crc      BQ40Z50_ConfigFingerprint(), big endian
+ *
+ * The MAGIC is not decoration. A virgin or garbage info block must never read
+ * as "already configured"; without it, a field of zeros matching a zero CRC
+ * would skip configuration on a blank pack.
+ *
+ * The VERSION is bumped by hand and is the human-readable statement of intent.
+ * The CRC catches the case where someone edits bq_golden[] and forgets to.
+ *
+ * Write the stamp LAST, only after every entry has been written and verified.
+ * Stamp first and an interrupted apply leaves a half-configured pack marked as
+ * done - silently, and permanently.
+ */
+#define BQ_STAMP_MAGIC      0x5247u     /* 'R','G' */
+#define BQ_CONFIG_VERSION   1u
+
+#define BQ_STAMP_MAGIC_ADDR (BQ_DF_MFG_INFO_A + 0)  /* 2 bytes */
+#define BQ_STAMP_VER_ADDR   (BQ_DF_MFG_INFO_A + 2)  /* 1 byte  */
+#define BQ_STAMP_CRC_ADDR   (BQ_DF_MFG_INFO_A + 3)  /* 2 bytes */
+
+/* CRC-16/CCITT-FALSE over bq_golden[] - address, size, flags and value of
+ * every entry. Changes whenever the configuration changes. */
+uint16_t    BQ40Z50_ConfigFingerprint(void);
+
+/* Does the pack's stamp match this firmware's configuration?
+ *
+ * Returns BQ_OK with *matches set, or a transport error if the pack could not
+ * be read - which the caller must distinguish, because "stamp mismatched" and
+ * "pack did not answer" call for different responses. Reconfiguring a pack
+ * that cannot be read just fails 25 more times and wastes the boot.
+ *
+ * Three word/byte reads, against 25 for a full verify. */
+BQ_STATUS   BQ40Z50_CheckConfigStamp(bool *matches);
+
+/* Stamp the pack as configured by this firmware. Call ONLY after a successful
+ * BQ40Z50_ApplyGoldenImage(). */
+BQ_STATUS   BQ40Z50_WriteConfigStamp(void);
+
+/* Optional progress hook, NULL by default. Called once per table entry during
+ * BQ40Z50_ApplyGoldenImage(), which can run for the best part of ten seconds
+ * on a pack needing full reconfiguration. Set it to blink an LED, clear it
+ * afterwards. The driver knows nothing about the board, hence the hook. */
+extern void (*BQ40Z50_ProgressHook)(void);
+
 BQ_STATUS   BQ40Z50_Seal(void);   /* production end step - not called by BringUp yet */
 
 /* Free the I2C2 bus from a slave stuck mid-byte holding SDA low.
@@ -547,7 +617,9 @@ bool        BQ40Z50_BusUnwedge(void);
  * temperature and cell voltages. Read-only and self-contained - safe to call
  * from main() on any pass, whether or not bring-up ran. Individual reads that
  * fail are reported as such rather than aborting the report. */
+#if BQ_VERBOSE          /* reporting only - absent from the field build */
 void        BQ40Z50_ReportStatus(void);
+#endif
 
 /* Full bring-up sequence: probe -> unseal -> DA config -> FETs -> voltages.
  * Progress and results are reported as text on UART1. Returns the first
