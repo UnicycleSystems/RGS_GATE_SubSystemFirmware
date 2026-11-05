@@ -7,6 +7,6 @@
 #define FIRMWARE_REV_LSB        7     //reset to 5 for next incremental release
 #define FIRMWARE_REV_MINOR      0
 
-#define FIRMWARE_RC  5     //Release candidate. Increment, set to zero on a release
+#define FIRMWARE_RC  6    //Release candidate. Increment, set to zero on a release
 
 #endif /* FIRMWARE_VERSION_H */

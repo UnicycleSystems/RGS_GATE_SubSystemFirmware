@@ -406,8 +406,15 @@ int main(void)
     /* The temperature field, for exactly the same PERSIST reason: the stored
      * blocks predate it, so it comes back as whatever the jig happened to hold
      * and a restored 0xFFFF would publish 6553.5 K. Zero is this field's own
-     * "not read yet" sentinel - impossible as a real temperature - which is
-     * precisely what it is until GetBattVolts() first runs. */
+     * "not read yet" sentinel - impossible as a real temperature.
+     *
+     * KEPT IN rc6 even though nothing writes these fields any more, and that
+     * is the point rather than an oversight. The reads are parked in
+     * GetBattVolts() but the bytes still exist in the map and PERSIST still
+     * mirrors them, so without these three writes a Jetson would read back
+     * whatever the stored block held - 0xFF everywhere, which decodes as
+     * 6280 degC and a plausible-looking charging voltage. With them it reads
+     * an explicit "never written", which is the truth. */
     MAP_PackUInt16(BatteryTemperatureNotRead,
                    &EMULATE_EEPROM_Memory[Temp_dK_LSBAddr]);
 
@@ -972,7 +979,21 @@ static void LedStateRestore(uint8_t state)
         BI_LED_RED_SetLow();
 }
 
-/* Read a two-byte SBS word from the gauge and publish it LSB-first at `addr`.
+/* ---- PublishGaugeWord(): PARKED 2026-11-05 for rc6 ----
+ *
+ * Commented rather than deleted, like the RSOC read inside GetBattVolts()
+ * below, and for the same reason: the diagnostic reads it served are wanted
+ * again the next time a pack misbehaves, and their field addresses are still
+ * in EEpromBlockLabels.h. Deleting this would mean rediscovering that the
+ * buffer must not be shared with `raw`, which is the one trap in it.
+ *
+ * Left out of rc6 only because both callers went with it - an unused static
+ * function is a warning, and this file builds clean.
+ *
+ * To revive: uncomment this and the two PublishGaugeWord() calls in
+ * GetBattVolts(), nothing else. The sentinels are already written at start-up.
+ *
+ * Read a two-byte SBS word from the gauge and publish it LSB-first at `addr`.
  * Returns false, and leaves the two published bytes ALONE, if the gauge will
  * not answer: a dropped transaction then shows as a stale figure rather than a
  * fabricated zero. The caller raises BatteryPackCommsFailure, which is what
@@ -988,7 +1009,7 @@ static void LedStateRestore(uint8_t state)
  *
  * Its own buffer, so a value it reads can never be left in a caller's. That is
  * the whole trap the RSOC note describes.
- */
+  *
 static bool PublishGaugeWord(uint8_t cmd, uint8_t addr)
 {
     uint8_t buf[2];
@@ -1000,10 +1021,11 @@ static bool PublishGaugeWord(uint8_t cmd, uint8_t addr)
             return false;
     }
 
-    EMULATE_EEPROM_Memory[addr]     = buf[0];   /* LSB */
-    EMULATE_EEPROM_Memory[addr + 1] = buf[1];   /* MSB */
+    EMULATE_EEPROM_Memory[addr]     = buf[0];    * LSB  *
+    EMULATE_EEPROM_Memory[addr + 1] = buf[1];    * MSB  *
     return true;
 }
+ */
 
 /* Read total pack voltage from the BQ40Z50 and publish it for the Jetson.
  *
@@ -1138,7 +1160,43 @@ uint16_t GetBattVolts(void)
         warning |= BatteryPackCommsFailure;
     }
 
-    /* ---- The two readings that explain the CHARGING side ----
+    /* ---- The three DIAGNOSTIC gauge reads: PARKED 2026-11-05 for rc6 ----
+     *
+     * Temperature() (0x08), ChargingVoltage() (0x15) and OperationStatus
+     * (MAC 0x0054) were added earlier the same day to diagnose charge
+     * terminating at about 15.8 V, and they did their job: OperationStatus
+     * showed PCHG on with CHG off, which is the gauge entering precharge
+     * because a cell had fallen below Precharge Start Voltage - a cell
+     * imbalance, confirmed on the bench.
+     *
+     * Out of rc6 because none of them is a FUNCTIONAL need. Nothing on the
+     * PIC consumes any of the three; they existed so the Jetson could see
+     * what was happening. Three reasons that matters:
+     *
+     *   - OperationStatus was the application's ONLY periodic write to the
+     *     gauge. A MAC subcommand means block-writing 0x0054 to
+     *     ManufacturerBlockAccess. Harmless as a status query, but rc6 is
+     *     back to reads-only, which is a smaller claim to have to defend.
+     *   - It was also the expensive one: a 37-byte block read, roughly forty
+     *     I2C2 interrupts in a burst every two seconds, against the eight
+     *     that the voltage and current reads cost between them.
+     *   - On the same afternoon the PIC's I2C1 slave locked up mid-session.
+     *     The cause was an unrecoverable receive overflow, now fixed in
+     *     i2c1.c - but the traffic these reads added is the most likely
+     *     trigger, and carrying them in a shipping build for no functional
+     *     return is not a trade worth making.
+     *
+     * The FIELDS REMAIN in EEpromBlockLabels.h, deliberately, and the
+     * start-up code still writes their "never read" sentinels - see the note
+     * beside those writes. A Jetson reading them therefore gets an explicit
+     * "not published by this build" rather than whatever PERSIST restored.
+     * RGS_PG_CurrentMonitor_rc5_diag.py displays all three and is kept for
+     * the next time they are needed.
+     *
+     * To revive: uncomment PublishGaugeWord() above and the three calls
+     * below. They must stay AFTER the current store, which still owns `raw`.
+     *
+     * ---- The two readings that explain the CHARGING side ----
      *
      * Added 2026-11-05, chasing charge terminating at about 15.8 V. Neither is
      * used by anything on the PIC; both exist so the condition is diagnosable
@@ -1162,14 +1220,14 @@ uint16_t GetBattVolts(void)
      * Order matters only in that both must come AFTER the current store above,
      * which still owns `raw`. PublishGaugeWord() uses its own buffer, so
      * neither can disturb it.
-     */
+      *
     if (!PublishGaugeWord(BQ_CMD_TEMPERATURE, Temp_dK_LSBAddr))
         warning |= BatteryPackCommsFailure;
 
     if (!PublishGaugeWord(BQ_CMD_CHARGING_VOLTAGE, ChargingVoltage_LSBAddr))
         warning |= BatteryPackCommsFailure;
 
-    /* ---- And the one reading that is a FACT rather than an inference ----
+     * ---- And the one reading that is a FACT rather than an inference ----
      *
      * OperationStatus carries the LIVE FET states. The two reads above let you
      * deduce that charge is not flowing and that the gauge is declining it;
@@ -1196,7 +1254,7 @@ uint16_t GetBattVolts(void)
      * On failure the published bytes are left ALONE, as with the two reads
      * above: stale beats inventing a status, and inventing this one would mean
      * reporting FET positions that were never measured.
-     */
+      *
     {
         uint32_t opstat;
 
@@ -1212,6 +1270,7 @@ uint16_t GetBattVolts(void)
             warning |= BatteryPackCommsFailure;
         }
     }
+     */
 
     /* ---- State of charge, and the battery warnings ----
      *

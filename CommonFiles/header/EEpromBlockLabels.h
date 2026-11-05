@@ -40,7 +40,7 @@ extern "C" {
 // 'Hard coded' parameters that are used by the subsystem build, 
 // to be  checked/ updated on any release
 //These are not, in this form, directly used by the 
-#define   TableVersion 5   //Version 4 - added charger state
+#define   TableVersion 6   //Version 4 - added charger state added diag fields
     
  // -------   *****  Please do read this. It's not hard. ***********  
  //---------------------!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!-----------------------
