@@ -380,11 +380,55 @@ void __attribute__ ( ( interrupt, no_auto_psv ) ) _SI2C1Interrupt ( void )
 
 
         default:
-            // should never happen, if we ever get here stay here forever
-            while(1);//set an error and return?
+            /* WAS `while(1);` - an infinite spin INSIDE the interrupt
+             * handler. Nothing in that loop clears the watchdog, so the
+             * real-world outcome was a watchdog reset about two seconds
+             * later: the unit reboots, the Jetson's rails move, and no
+             * record survives of why. "Should never happen" is not a reason
+             * to make it unrecoverable.
+             *
+             * A desynchronised slave state machine IS recoverable, and the
+             * recovery is the same one the overflow path below uses: drop to
+             * idle, flush the receive register so RBF cannot stay set, clear
+             * any overflow, and release the clock in case we were stretching
+             * it. The master's next START then re-addresses us cleanly and
+             * the only cost is one failed transaction, which every caller on
+             * the Jetson side already retries. */
+            i2c1_slave_state = S_SLAVE_IDLE;
+            dummy = I2C1_RECEIVE_REG;
+            I2C1_RECEIVE_OVERFLOW_STATUS_BIT = 0;
+            I2C1_RELEASE_SCL_CLOCK_CONTROL_BIT = 1;
             break;
     }
 
+
+    /* ---- Catch-all overflow recovery ----
+     *
+     * The receive-mode path above already handles an overflow on a DATA
+     * byte, which is the common case and the one the MCC driver was written
+     * for. It does NOT cover an overflow that latches anywhere else: on an
+     * address byte (D_A == 0), in transmit mode, or while idle. Nothing else
+     * in this file clears the bit either.
+     *
+     * That gap is expensive out of proportion to its likelihood. A set I2COV
+     * makes the module NACK everything INCLUDING ITS OWN ADDRESS, so the
+     * symptom is not a corrupted byte - it is the Jetson link going
+     * completely dead, with the application still running happily and the
+     * LEDs still flashing. From the host it looks identical to a powered-down
+     * or bootloader-parked unit. Seen 2026-11-05: `OSError: [Errno 121]` on
+     * every transaction, cleared only by a power cycle.
+     *
+     * Checked once, here, after the state machine has had its turn, so the
+     * normal path keeps its existing behaviour and this only fires on the
+     * cases that previously had no way out.
+     */
+    if (I2C1_RECEIVE_OVERFLOW_STATUS_BIT == 1)
+    {
+        dummy = I2C1_RECEIVE_REG;        /* clear RBF first, or I2COV sticks */
+        I2C1_RECEIVE_OVERFLOW_STATUS_BIT = 0;
+        i2c1_slave_state = S_SLAVE_IDLE; /* whatever we were doing is lost   */
+        I2C1_RELEASE_SCL_CLOCK_CONTROL_BIT = 1;
+    }
 
     // clear the slave interrupt flag
     IFS1bits.SI2C1IF = 0;
