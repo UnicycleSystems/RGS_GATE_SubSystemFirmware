@@ -152,6 +152,22 @@
 
 /* SBS commands used by the status report. Current() and friends are SIGNED:
  * negative is discharge. */
+#define BQ_CMD_TEMPERATURE        0x08    /* uint16, 0.1 K - NOT 0.1 degC, and
+                                           * UNSIGNED. degC = value/10 - 273.15,
+                                           * so 2981 is 25.0 degC and a pack at
+                                           * -20 degC still reads positive, 2531.
+                                           *
+                                           * WHOSE temperature depends on the
+                                           * Temperature Enable / Temperature
+                                           * Mode data flash below. With the
+                                           * golden image's BENCH values (TSint
+                                           * only) this is the gauge's own DIE,
+                                           * reported as the cell temperature -
+                                           * and that one figure picks the
+                                           * charge voltage band AND gates OTC
+                                           * and UTC, either of which opens the
+                                           * charge FET. Worth publishing for
+                                           * exactly that reason.             */
 #define BQ_CMD_VOLTAGE            0x09    /* uint16, mV - TOTAL pack voltage.
                                            * A plain word read, legal in every
                                            * security mode: no unseal, no

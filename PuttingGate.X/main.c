@@ -180,6 +180,44 @@ static uint8_t ChargeThresholdNow; // thus indicates which to test against
  /* static uint8_t VoltageCriticalCount; - retired with the ratchet above */
  static uint8_t ChargeCriticalCount;
 
+/* Publish the charger state to StatusByte, from the same two pins the ring
+ * LED is driven from. Called once a second, immediately before the ring tick.
+ *
+ * It lives HERE rather than in power_control.c on purpose. That file is shared
+ * with RGS_BringUp and deliberately knows nothing but pins - it includes
+ * pin_manager.h and its own header, and no part of the EEPROM map. Publishing
+ * from there would couple it to the memory layout and oblige BringUp to carry
+ * that too, when every other EMULATE_EEPROM write in this application is
+ * already made from main.c.
+ *
+ * Read-modify-write, so the six unused bits of the byte are preserved for
+ * whatever claims them next.
+ *
+ * PWR_ChargeComplete() is only consulted while a charger is present, because
+ * VER_0 means nothing without one - see the note in power_control.h. With the
+ * charger gone both bits clear together. */
+static void PublishChargerStatus(void)
+{
+    uint8_t status = EMULATE_EEPROM_Memory[StatusByteAddr];
+
+    if (PWR_ChargerPresent())
+    {
+        status |= StatusChargerPresent;
+
+        if (PWR_ChargeComplete())
+            status |= StatusChargeComplete;
+        else
+            status &= (uint8_t)~StatusChargeComplete;
+    }
+    else
+    {
+        status &= (uint8_t)~(StatusChargerPresent | StatusChargeComplete);
+    }
+
+    EMULATE_EEPROM_Memory[StatusByteAddr] = status;
+}
+
+
 /* Progress indication while the battery pack is being reconfigured, which
  * takes the best part of ten seconds. Called once per golden-table entry via
  * BQ40Z50_ProgressHook, so it blinks at roughly the rate entries are written.
@@ -353,6 +391,42 @@ int main(void)
      * the Jetson's request stays runtime state. */
     EMULATE_EEPROM_Memory[ConfigLasersAddr] = LaserState_LampsMask;
 
+    /* Start the status byte from a known zero, and for the same reason as the
+     * lamp default above: PERSIST_LoadToEeprom() mirrors the whole 256-byte
+     * block, so this byte comes back as whatever the bring-up jig happened to
+     * store - and the stored blocks predate the byte existing.
+     *
+     * It matters more than a stray bit usually would. A restored 0xFF would
+     * have StatusChargeComplete set, and GetBattVolts() forces RemainingCharge
+     * to 100% while that bit is up, so the gauge would read full until the
+     * first charger sample corrected it. Zero here means "no charger, not
+     * charged", which is the safe reading of an unknown state. */
+    EMULATE_EEPROM_Memory[StatusByteAddr] = 0u;
+
+    /* The temperature field, for exactly the same PERSIST reason: the stored
+     * blocks predate it, so it comes back as whatever the jig happened to hold
+     * and a restored 0xFFFF would publish 6553.5 K. Zero is this field's own
+     * "not read yet" sentinel - impossible as a real temperature - which is
+     * precisely what it is until GetBattVolts() first runs. */
+    MAP_PackUInt16(BatteryTemperatureNotRead,
+                   &EMULATE_EEPROM_Memory[Temp_dK_LSBAddr]);
+
+    /* And the charging-voltage request, whose sentinel is 0xFFFF rather than
+     * zero - zero is a real reading there, meaning the gauge is refusing
+     * charge. Setting it to zero here would publish a refusal the gauge never
+     * made, which is the one reading on this field nobody should invent. */
+    MAP_PackUInt16(ChargingVoltageNotRead,
+                   &EMULATE_EEPROM_Memory[ChargingVoltage_LSBAddr]);
+
+    /* And OperationStatus, whose sentinel is all-ones for a third distinct
+     * reason: all-ZEROES is a real and alarming status there, meaning both
+     * FETs open. Publishing zero at start-up would report a pack that had shut
+     * its FETs when in truth nothing had been read yet. */
+    MAP_PackUInt16((uint16_t)OperationStatusNotRead,
+                   &EMULATE_EEPROM_Memory[OpStatus_B0Addr]);
+    MAP_PackUInt16((uint16_t)(OperationStatusNotRead >> 16),
+                   &EMULATE_EEPROM_Memory[OpStatus_B2Addr]);
+
     /* Pull the accelerometer corrections into the working variables, now that
      * the register file holds the restored block.
      *
@@ -469,7 +543,15 @@ int main(void)
                 if (EMULATE_EEPROM_Memory[PowerOffFlag]==ImmediatePowerOff)
                     AllPowerDown();
 
-                /* Once a second: sample the charger and set the ring LED. */
+                /* Once a second: sample the charger, publish it to StatusByte,
+                 * and set the ring LED. Both read the same two pins, so they
+                 * are kept adjacent - the LED and the published byte should
+                 * never disagree about what the charger is doing.
+                 *
+                 * This runs BEFORE the round-robin task below, which is what
+                 * makes the 100% override in GetBattVolts() sound: the status
+                 * byte is always current when the battery task reads it. */
+                PublishChargerStatus();
                 PWR_RingChargeTick();
                 if(SelfResetTimeout)// if the first part of reset been issued, it needs to be completed within 10 seconds or is cancelled.
                 {
@@ -890,6 +972,39 @@ static void LedStateRestore(uint8_t state)
         BI_LED_RED_SetLow();
 }
 
+/* Read a two-byte SBS word from the gauge and publish it LSB-first at `addr`.
+ * Returns false, and leaves the two published bytes ALONE, if the gauge will
+ * not answer: a dropped transaction then shows as a stale figure rather than a
+ * fabricated zero. The caller raises BatteryPackCommsFailure, which is what
+ * says the published figures may be old.
+ *
+ * Used by the temperature and charging-voltage reads, and deliberately NOT by
+ * the pack voltage and current reads above them. Those two differ in ways that
+ * matter: the voltage read returns early on failure, because nothing further
+ * down GetBattVolts() may run without a real voltage, and the current read
+ * leaves its result in `raw` for SOCV_Update() to unpack. Folding either into
+ * this would change proven behaviour in a function that has had subtle bugs
+ * before - see the parked RSOC note - for no gain.
+ *
+ * Its own buffer, so a value it reads can never be left in a caller's. That is
+ * the whole trap the RSOC note describes.
+ */
+static bool PublishGaugeWord(uint8_t cmd, uint8_t addr)
+{
+    uint8_t buf[2];
+
+    if (!i2c2_read_regs(BQ40Z50_I2C_ADDRESS, cmd, buf, 2))
+    {
+        i2c2_bus_unwedge();
+        if (!i2c2_read_regs(BQ40Z50_I2C_ADDRESS, cmd, buf, 2))
+            return false;
+    }
+
+    EMULATE_EEPROM_Memory[addr]     = buf[0];   /* LSB */
+    EMULATE_EEPROM_Memory[addr + 1] = buf[1];   /* MSB */
+    return true;
+}
+
 /* Read total pack voltage from the BQ40Z50 and publish it for the Jetson.
  *
  * SBS Voltage() (0x09) returns total pack millivolts as a 16-bit word, LSB
@@ -897,9 +1012,12 @@ static void LedStateRestore(uint8_t state)
  * the same convention MAP_PackInt16() implements - so the two bytes go
  * straight across without reordering.
  *
- * Read directly rather than through bq40z50.c: that driver is not in this
- * project's build, and Voltage() needs no unseal and no ManufacturerAccess,
- * so a plain register read is the whole job.
+ * Read directly rather than through bq40z50.c even though that driver IS in
+ * this project's build (with -DBQ_VERBOSE=0): Voltage() needs no unseal and no
+ * ManufacturerAccess, so a plain register read is the whole job and going
+ * through the driver would buy nothing. The claim that the driver was absent
+ * was left over from before it was added, and was the same stale statement
+ * already corrected at its include.
  *
  * NOTE: the previous version of this function read a different device (0x36)
  * and wrote the result to EMULATE_EEPROM_Memory[8] and [9] - which are
@@ -1020,6 +1138,81 @@ uint16_t GetBattVolts(void)
         warning |= BatteryPackCommsFailure;
     }
 
+    /* ---- The two readings that explain the CHARGING side ----
+     *
+     * Added 2026-11-05, chasing charge terminating at about 15.8 V. Neither is
+     * used by anything on the PIC; both exist so the condition is diagnosable
+     * from the Jetson instead of only on the bench with an EV2400.
+     *
+     * Temperature(), 0.1 K UNSIGNED - and with the golden image's BENCH config
+     * (Temperature Enable 0x01, Mode 0x00) it is the gauge's own DIE, reported
+     * as the cell temperature. That single figure selects the charge voltage
+     * band AND gates OTC and UTC, either of which opens the charge FET, which
+     * is why one number is worth two bytes of map. Zero is its "never read"
+     * sentinel: 0 K cannot happen.
+     *
+     * ChargingVoltage(), mV UNSIGNED - what the gauge is actually ASKING the
+     * charger for, so 16800 / 16400 / 16000 for the three bands. This is the
+     * authoritative form of the question the temperature only lets you infer,
+     * because the band table lives in a data flash capture that nothing here
+     * can verify. Its sentinel is 0xFFFF, NOT zero: zero is a real reading
+     * meaning the pack is refusing charge outright, which is precisely the
+     * case worth seeing. See both fields in EEpromBlockLabels.h.
+     *
+     * Order matters only in that both must come AFTER the current store above,
+     * which still owns `raw`. PublishGaugeWord() uses its own buffer, so
+     * neither can disturb it.
+     */
+    if (!PublishGaugeWord(BQ_CMD_TEMPERATURE, Temp_dK_LSBAddr))
+        warning |= BatteryPackCommsFailure;
+
+    if (!PublishGaugeWord(BQ_CMD_CHARGING_VOLTAGE, ChargingVoltage_LSBAddr))
+        warning |= BatteryPackCommsFailure;
+
+    /* ---- And the one reading that is a FACT rather than an inference ----
+     *
+     * OperationStatus carries the LIVE FET states. The two reads above let you
+     * deduce that charge is not flowing and that the gauge is declining it;
+     * only bit 2 here says whether the charge FET is actually open. Added
+     * 2026-11-05 after charge current sat below 10 mA for an extended period
+     * and the question "is the CHG FET off?" could not be answered from the
+     * map at all.
+     *
+     * NOT a plain register read, unlike everything else in this function. A
+     * MAC subcommand means block-WRITING 0x0054 to ManufacturerBlockAccess and
+     * then reading the reply, so this is the first periodic write the app makes
+     * to the gauge. 0x0054 is a read-only status query - it changes no gauge
+     * state, touches no data flash and causes no flash wear - and the same
+     * mechanism already runs three times at every boot inside
+     * BQ40Z50_CheckConfigStamp(). What is new is only the frequency.
+     *
+     * Through bq40z50.c rather than i2c2_read_regs(), because the block
+     * protocol with its length byte and echoed subcommand is exactly what that
+     * driver already implements and RGS_BringUp already exercises. Nominally
+     * about 15 ms; the worst case is bounded by BQ_RETRY_MAX and every wait in
+     * that path clears the watchdog, so a gauge that will not answer cannot
+     * push this function past the ~2.1 s timeout.
+     *
+     * On failure the published bytes are left ALONE, as with the two reads
+     * above: stale beats inventing a status, and inventing this one would mean
+     * reporting FET positions that were never measured.
+     */
+    {
+        uint32_t opstat;
+
+        if (BQ40Z50_ReadMAC32(BQ_MAC_OPERATION_STATUS, &opstat) == BQ_OK)
+        {
+            MAP_PackUInt16((uint16_t)opstat,
+                           &EMULATE_EEPROM_Memory[OpStatus_B0Addr]);
+            MAP_PackUInt16((uint16_t)(opstat >> 16),
+                           &EMULATE_EEPROM_Memory[OpStatus_B2Addr]);
+        }
+        else
+        {
+            warning |= BatteryPackCommsFailure;
+        }
+    }
+
     /* ---- State of charge, and the battery warnings ----
      *
      * Reached only on a successful VOLTAGE read: both failure paths above
@@ -1034,8 +1227,9 @@ uint16_t GetBattVolts(void)
      * drop would stay asserted for ever - which is precisely the failing the
      * ratchet's coarse ">=14300 having passed two levels" escape existed to
      * work around. Any new SOCV warning bit must be added to that mask too.
-     * BatteryPackCommsFailure is deliberately NOT cleared here:
-     * it is managed at the top of this function and by the current read above.
+     * BatteryPackCommsFailure is deliberately NOT cleared here: it is managed
+     * at the top of this function and by the current and temperature reads
+     * above.
      *
      * The current is passed for completeness - soc_voltage.c does not use it
      * yet, see the load-compensation note in its header. A failed current read
@@ -1047,6 +1241,23 @@ uint16_t GetBattVolts(void)
     warning &= ~(LowBatteryWarning | LowBatteryCritical |
                  PowerOff_10_min | PowerOff_1_min);
     warning |= SOCV_Warnings();
+
+    /* A charger reporting "fully charged" overrides the indicator: report
+     * 100%, whatever the voltage curve made of it.
+     *
+     * This has to come AFTER SOCV_Update(), which writes RemainingChargeAddr
+     * itself. Setting 100 anywhere earlier - in PublishChargerStatus(), say -
+     * would simply be overwritten the next time the battery task ran, and the
+     * gauge would alternate between 100 and the curve's reading once every two
+     * seconds. Last writer wins, so the last writer has to be this one.
+     *
+     * The warnings above are deliberately NOT suppressed. They are driven by
+     * pack voltage, and a pack sitting on a charger is nowhere near them; if
+     * one ever did assert while charging, that is worth knowing rather than
+     * hiding. StatusChargeComplete not latching is what keeps this honest -
+     * see the bit definitions in EEpromBlockLabels.h. */
+    if (EMULATE_EEPROM_Memory[StatusByteAddr] & StatusChargeComplete)
+        EMULATE_EEPROM_Memory[RemainingChargeAddr] = 100u;
 
     ClrWdt();
     LedStateRestore(ledWas);
