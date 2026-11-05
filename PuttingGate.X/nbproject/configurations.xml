@@ -39,6 +39,8 @@
       <itemPath>../CommonFiles/header/lis2dw12_i2c2.h</itemPath>
       <itemPath>../CommonFiles/header/power_control.h</itemPath>
       <itemPath>../CommonFiles/header/InitEEpromVals.h</itemPath>
+      <itemPath>../CommonFiles/header/soc_voltage.h</itemPath>
+      <itemPath>../CommonFiles/header/soc_estimator.h</itemPath>
       <itemPath>../CommonFiles/header/bq40z50.h</itemPath>
       <itemPath>../CommonFiles/header/ArrayUtils.h</itemPath>
     </logicalFolder>
@@ -104,6 +106,8 @@
       <itemPath>../CommonFiles/source/flash.s</itemPath>
       <itemPath>../CommonFiles/source/pitchandroll.c</itemPath>
       <itemPath>../CommonFiles/source/InitEEpromVals.c</itemPath>
+      <itemPath>../CommonFiles/source/soc_voltage.c</itemPath>
+      <itemPath>../CommonFiles/source/soc_estimator.c</itemPath>
       <itemPath>../CommonFiles/source/bq40z50.c</itemPath>
       <itemPath>../CommonFiles/source/ArrayUtils.c</itemPath>
       <itemPath>../CommonFiles/source/i2c2_helpers.c</itemPath>

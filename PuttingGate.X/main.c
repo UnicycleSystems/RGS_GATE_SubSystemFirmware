@@ -34,11 +34,24 @@
 #include "../CommonFiles/header/EEpromBlockLabels.h"
 #include "../CommonFiles/header/InitEEpromVals.h"
 #include "../CommonFiles/header/ArrayUtils.h"
-/* For BQ40Z50_I2C_ADDRESS and BQ_CMD_VOLTAGE only - bq40z50.c is NOT in this
- * project's build. That driver is heavily instrumented with UART reporting,
- * which the field application neither initialises nor has the flash to spare
- * for. The one word we need is a plain SBS read we can do directly. */
+/* bq40z50.c IS in this project's build, and has been since the boot-time pack
+ * configuration went in. It did not used to be: the comment here said so for a
+ * while after it changed, which is worth knowing if you are reading old notes.
+ *
+ * The driver is heavily instrumented with UART reporting the field application
+ * neither initialises nor has the flash to spare for, so this project compiles
+ * it with -DBQ_VERBOSE=0 (set in the project's XC16 preprocessor macros, and
+ * bq40z50.c has an #error if it is left undefined). That turns the print
+ * helpers into ((void)0) macros - macros specifically, so the string literals
+ * are dropped too rather than merely unreferenced - and guards the reporting
+ * functions out altogether. It saves about 10.8 kB, which is the difference
+ * between fitting and not.
+ *
+ * What this project uses from it: BQ40Z50_I2C_ADDRESS, BQ_CMD_VOLTAGE and
+ * BQ_CMD_CURRENT for the plain SBS reads in GetBattVolts(), and the config
+ * stamp, golden image and sense-gain calls for the boot-time setup. */
 #include "../CommonFiles/header/bq40z50.h"
+#include "../CommonFiles/header/soc_voltage.h"
 
 
 //accelerometer specific stuff....
@@ -58,16 +71,24 @@
 ////////////////////////////////////////////////////
 // Round robin to move to seperate c and h files?
 //round robin possible tasks
-uint8_t GetBattVolts(void);
-uint8_t GetAccel(void);
+/* uint16_t, not uint8_t, and that matters. These return CallJetson codes from
+ * the bitfield in EEpromBlockLabels.h, which is 16 bits wide, as are
+ * CallJetsonCode in the emulated EEPROM and WarnCodeToJetson() itself. While
+ * this hop was uint8_t everything from 0x0100 up - Spare3 onwards - was
+ * silently truncated between a task and the Jetson: the bit would be set,
+ * tested true inside the task, and then simply not arrive. Nothing hit it
+ * because every code in use was in the low byte, and PowerOff_10_min at
+ * 0x0080 was the last one that would have fitted. */
+uint16_t GetBattVolts(void);
+uint16_t GetAccel(void);
 
-typedef uint8_t (*TaskFn)(void);
+typedef uint16_t (*TaskFn)(void);
 TaskFn Task[]={GetAccel,GetBattVolts};
 
 #define NUM_Tasks (sizeof(Task)/sizeof(Task[0]))
 
 uint8_t TaskIndex;
-uint8_t TaskWarning;
+uint16_t TaskWarning;   /* 16 bits to match the CallJetson bitfield - see above */
 void HandleTaskWarning(uint16_t code);  // handler for any errors/warnings on routine tasks
 
 ////////////////////////////////////////////////
@@ -124,17 +145,39 @@ I2C_WriteJob_t LoadJobFromEEprom;
  int16_t zcal;
  
  //battery management levels and control variables
- static const uint16_t VoltageThresholds[]={14300,14100,14000,13800,13400,13300}; // voltages in millvolts
-#define NumVoltLevels 5  // includes 0, so six items
-#define CriticalVoltage VoltageThresholds[NumVoltLevels]
-static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
- 
+
+/* ---- The voltage ratchet: RETIRED 2026-11-05, replaced by soc_voltage.c ----
+ *
+ * Kept here, commented, rather than deleted. These six thresholds were picked
+ * in the field and this repository is not under version control, so deleting
+ * them would destroy the only record of them.
+ *
+ *     static const uint16_t VoltageThresholds[]={14300,14100,14000,13800,13400,13300};
+ *     #define NumVoltLevels 5  // includes 0, so six items
+ *     #define CriticalVoltage VoltageThresholds[NumVoltLevels]
+ *     static uint8_t VoltageThresholdNow;
+ *
+ * Read on the measured discharge curve in soc_voltage.c they come out at
+ * 31.4 / 21.2 / 16.9 / 10.1 / 0.0 / 0.0 percent. That 13800 lands on 10.1% is
+ * why SOCV_WARN_PCT is 10 - the hand-picked last warning and the integrated
+ * curve agree to within 5 mV, which is the main reason for trusting the swap.
+ *
+ * What the ratchet DID: advance one level per reading that fell below the
+ * current threshold, warn on each step, and at level 5 (13300 mV) count four
+ * readings before asserting PowerOff_1_min. It only ever recovered through the
+ * "above 14300 having passed at least two levels" escape, so it was a one-way
+ * latch with a coarse reset, and its first warning fired at 31% of pack.
+ *
+ * SOCV_Update() does the same job from the same 13300 mV stop, with a
+ * 3-reading debounce and 200 mV of hysteresis applied to the clearing side.
+ */
+
  static const uint8_t ChargeThresholds[]={25,20,15,10,5};  // charge as percent
 #define NumChrgLevels 4 // includes 0
 #define CrticalCharge ChargeThresholds[NumChrgLevels]
 static uint8_t ChargeThresholdNow; // thus indicates which to test against
 
- static uint8_t VoltageCriticalCount;
+ /* static uint8_t VoltageCriticalCount; - retired with the ratchet above */
  static uint8_t ChargeCriticalCount;
 
 /* Progress indication while the battery pack is being reconfigured, which
@@ -245,9 +288,12 @@ int main(void)
  INTERRUPT_TO_JETSON_SetLow();
     
  //initialise the voltage and charge thresholds for battery manangement
- VoltageThresholdNow=0;
+ /* VoltageThresholdNow and VoltageCriticalCount went with the ratchet - see
+  * the note beside their declarations. SOCV_Init() takes their place, and must
+  * run before the first GetBattVolts(): its debounce counters and the latched
+  * shutdown flag are file statics that have to start from a known state. */
+ SOCV_Init();
  ChargeThresholdNow=0;
- VoltageCriticalCount=0;
  ChargeCriticalCount=0;
  
  
@@ -861,13 +907,8 @@ static void LedStateRestore(uint8_t state)
  * Z reading with battery data. The destination is now BatteryPackVoltage_Addr,
  * which is what the map reserves for it.
  */
-uint8_t GetBattVolts(void) //TODO: extend to check charge ,and determine if critical or not
+uint16_t GetBattVolts(void)
 {
-    
-   /*static const uint16_t VoltageThresholds[]="14300,14100,14000,13800,13400,13300"; // voltages in millvolts
-#define NumVoltLevels 5  // includes 0, so six items
-#define CriticalVoltage VoltageThresholds[NumVoltLevels]
-static uint8_t VoltageThresholdNow;  // thus indicates which one to test against  */
     uint8_t raw[2];
     uint16_t voltagemv;
     /* STATIC, and initialised. The flags are cleared and set across calls -
@@ -877,7 +918,8 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
      * PowerOff_1_min and HandleTaskWarning() ran AllPowerDown() within
      * seconds of every boot. */
     static uint16_t warning = 0;
-    uint8_t FuelGuagePercent;
+    /* uint8_t FuelGuagePercent; - was the destination for the parked RSOC read
+     * below, and never assigned. Restore it with that read if it is revived. */
     uint8_t ledWas = LedStateSave();
     BI_LED_GREEN_SetLow();//Turn off Green LED
     BI_LED_RED_SetHigh();//Turn on Red LED
@@ -914,69 +956,51 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
     EMULATE_EEPROM_Memory[BatteryPackVoltage_Addr + 1] = raw[1];  /* MSB */
     voltagemv = MAP_UnpackInt16(raw);
 
-    if (voltagemv<(VoltageThresholds[VoltageThresholdNow]))  //12v is a nominal, test figure, 3V per cell
-    {
-        
-        if(VoltageThresholdNow>=5)
-        {
-           warning|=LowBatteryCritical; 
-            
-            if(VoltageCriticalCount>=3)
-                warning|=PowerOff_1_min;
-                
-            
-            VoltageCriticalCount++;
-        }
-        else
-        {
-            warning|=LowBatteryWarning;//May get modified to  critical 
-            VoltageThresholdNow++;
-        }
-           
-    }
-    
-    
-    
-    
-    //Quick sanity check if voltage gone up again recently - ie has previously passed at least two thresholds, but is now above the higher threshold, then call it all off
-    if ( (voltagemv>=(VoltageThresholds[0])) && (VoltageThresholdNow>=2) )  
-    {
-        VoltageThresholdNow=0;
-        VoltageCriticalCount=0;
-        warning&=~LowBatteryWarning;
-        warning&=~LowBatteryCritical;
-    }
-    
-    //copy the voltage code, then edit for charge%
-    
-      if (!i2c2_read_regs(BQ40Z50_I2C_ADDRESS, BQ_CMD_RSOC, raw, 2))
-    {
-        i2c2_bus_unwedge();
-        if (!i2c2_read_regs(BQ40Z50_I2C_ADDRESS, BQ_CMD_RSOC, raw, 2))
-        {
-            /* Still no reading. Leave the published voltage as it was - stale
-             * is less misleading than a sudden zero, which would read as a
-             * flat pack - and skip the thresholds: raw was never filled, so
-             * judging it would act on whatever was left on the stack, and
-             * could walk the unit towards a false power-off. */
-            LedStateRestore(ledWas);
-            warning|=BatteryPackCommsFailure;
-            return(warning);
-        }
-    }
+    /* The voltage thresholds are judged by SOCV_Update() further down, not
+     * here: it needs the pack current as well, which is not read until below.
+     * See the retired-ratchet note beside the declarations at the top. */
 
-    /* Same as the voltage read above: reached only when a read succeeded, by
-     * either route, so a successful retry is no longer thrown away. */
- 
+    /* ---- The gauge's own RSOC read: PARKED 2026-11-05 ----
+     *
+     * Left commented rather than removed, because it is worth logging the
+     * gauge's figure against the voltage estimate once Impedance Track has
+     * actually learned something - at which point this becomes the better
+     * number and the voltage curve becomes the fallback.
+     *
+     * As written it was dead twice over: nothing stored the result (raw was
+     * reused by the current read below, and FuelGuagePercent was never
+     * assigned), and the gauge has learned nothing yet - Update Status reads
+     * 0x04, enabled but with no learned data - so RSOC was a voltage guess
+     * made by the gauge rather than a measurement.
+     *
+     * It was not harmless. The early return on a failed read skipped the
+     * current read entirely, so a gauge that would not answer RSOC also
+     * stopped the pack-current publication at addresses 21/22. If this is
+     * ever re-enabled, store the result BEFORE the current read and drop the
+     * early return, or that defect comes back with it.
+     *
+     *   if (!i2c2_read_regs(BQ40Z50_I2C_ADDRESS, BQ_CMD_RSOC, raw, 2))
+     *   {
+     *       i2c2_bus_unwedge();
+     *       if (!i2c2_read_regs(BQ40Z50_I2C_ADDRESS, BQ_CMD_RSOC, raw, 2))
+     *       {
+     *           LedStateRestore(ledWas);
+     *           warning|=BatteryPackCommsFailure;
+     *           return(warning);
+     *       }
+     *   }
+     */
+
     /* Instantaneous pack current, mA, SIGNED - negative is discharge. Byte
      * order matches the voltage store above: SMBus returns LSB first, so
      * raw[0] goes to the lower address.
      *
      * Same read-unwedge-retry as the voltage read, but it deliberately does
-     * NOT return early on failure. Nothing below depends on the current, and
-     * an early return would skip the ClrWdt() that follows. A failed read
-     * leaves the previously published value in place, which is stale rather
-     * than wrong.
+     * NOT return early on failure. An early return would skip the ClrWdt()
+     * that follows, and it would also skip SOCV_Update() - which judges the
+     * SHUTDOWN, and must not be silenced by a missing current reading it does
+     * not even use yet. A failed read leaves the previously published value in
+     * place, which is stale rather than wrong, and passes 0 to SOCV below.
      *
      * Reuses raw, so any future RSOC store must happen BEFORE this point. */
     bool gotCurrent = i2c2_read_regs(BQ40Z50_I2C_ADDRESS, BQ_CMD_CURRENT, raw, 2);
@@ -988,23 +1012,50 @@ static uint8_t VoltageThresholdNow;  // thus indicates which one to test against
 
     if (gotCurrent)
     {
-        EMULATE_EEPROM_Memory[Current_mA_LSB] = raw[0];  /* LSB */
-        EMULATE_EEPROM_Memory[Current_mA_MSB] = raw[1];  /* MSB */
+        EMULATE_EEPROM_Memory[Current_mA_LSBAddr] = raw[0];  /* LSB */
+        EMULATE_EEPROM_Memory[Current_mA_MSBAddr] = raw[1];  /* MSB */
     }
     else
     {
         warning |= BatteryPackCommsFailure;
     }
-    
-            
+
+    /* ---- State of charge, and the battery warnings ----
+     *
+     * Reached only on a successful VOLTAGE read: both failure paths above
+     * returned early, so voltagemv holds a real reading and not whatever was
+     * on the stack. That matters more here than it did for the old ratchet,
+     * because a low enough garbage value now walks straight to a power-down.
+     *
+     * soc_voltage.c owns all four battery warning bits from here on, and
+     * recomputes them from scratch every call with its own debounce and
+     * hysteresis. `warning` is STATIC and latching, so its previous copies of
+     * those bits must be cleared before the merge or a bit SOCV has decided to
+     * drop would stay asserted for ever - which is precisely the failing the
+     * ratchet's coarse ">=14300 having passed two levels" escape existed to
+     * work around. Any new SOCV warning bit must be added to that mask too.
+     * BatteryPackCommsFailure is deliberately NOT cleared here:
+     * it is managed at the top of this function and by the current read above.
+     *
+     * The current is passed for completeness - soc_voltage.c does not use it
+     * yet, see the load-compensation note in its header. A failed current read
+     * passes 0 rather than skipping the update: the voltage is what the lookup
+     * needs, and suppressing the shutdown judgement over a missing current
+     * reading would be the dangerous way round. */
+    SOCV_Update(voltagemv, gotCurrent ? MAP_UnpackInt16(raw) : 0);
+
+    warning &= ~(LowBatteryWarning | LowBatteryCritical |
+                 PowerOff_10_min | PowerOff_1_min);
+    warning |= SOCV_Warnings();
+
     ClrWdt();
     LedStateRestore(ledWas);
     return(warning);
 }
 
-uint8_t GetAccel(void)
+uint16_t GetAccel(void)
 {
-    uint8_t warning;
+    uint16_t warning;       /* 16 bits, as returned to TaskWarning */
     uint8_t ledWas;
     warning=0;
 

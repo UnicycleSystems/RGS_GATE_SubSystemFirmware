@@ -183,11 +183,18 @@ extern "C" {
  */
  
     
-//instantaneous current drawn from the pack ,in mA    
-#define Current_mA_LSB (FirmwareVersionMSBAddr + 1)
-#define Current_mA_MSB (Current_mA_LSB + 1)
+//instantaneous current drawn from the pack ,in mA 
+#define BatteryPackCurrent_Addr (FirmwareVersionAddr + FirmwareVersionNumBytes)
+#define BatteryPackCurrentNumBytes 2
+#define Current_mA_LSBAddr (BatteryPackCurrent_Addr)
+#define Current_mA_MSBAddr (Current_mA_LSBAddr + 1)
     
+ // Remaining charge %
+ 
+#define RemainingChargeAddr ( BatteryPackCurrent_Addr + BatteryPackCurrentNumBytes)
+#define RemainingChargeNumBytes 1
     
+
   
  //READ ONLY Block 2   
  // addresses and field sizes of High order read only parameters 
@@ -351,8 +358,24 @@ extern "C" {
 #define BallStrike 0x0010 // accelerometer indicates the gate has been knocked, or a ball strike , or some other impact event that has had minimal effect on orientation
 #define GateMoving 0x0020 // The gate appears to have been picked up. Lasers are off, will remain so until correct orientation for a few second
 #define GateInvalidOrientation 0x0040 // The gate has a tilt greater that TBD X degrees
-#define Spare2 0x0080 // 
-#define Spare3 0x0100 
+/* The state-of-charge indicator has bottomed out at its 1% floor, so a forced
+ * power-down is close but not yet due. The 1% band runs from 13551 mV to the
+ * 13300 mV stop; replayed against the logged discharge of 2026-11-02 that is
+ * 15 minutes of notice, and longer under a lighter load. Named for ten to
+ * promise less than it delivers.
+ *
+ * Raised by soc_voltage.c, IN ADDITION to LowBatteryWarning and
+ * LowBatteryCritical, which are already set by then and stay set. A Jetson
+ * build that does not know this bit therefore loses nothing - it still sees
+ * critical and behaves as it did before. Unlike PowerOff_1_min this is purely
+ * advisory: HandleTaskWarning() publishes it and takes no action. */
+#define PowerOff_10_min 0x0080
+
+/* CAUTION: Spare3 and everything above it is 0x0100 or higher. Codes raised by
+ * a round-robin task reach the Jetson through TaskWarning, which was uint8_t
+ * until 2026-11-05 and would have dropped them silently. It is uint16_t now,
+ * so these are usable - but check any other path that carries a code. */
+#define Spare3 0x0100
 #define Spare4 0x0200 // 
 #define Spare5 0x0400
 #define Spare6 0x0800
