@@ -216,43 +216,33 @@ extern "C" {
 #define StatusChargerPresent 0x01   /* a charger is connected                  */
 #define StatusChargeComplete 0x02   /* and it reports the pack fully charged   */
 
-/* Pack temperature as the GAUGE reports it: SBS Temperature() (0x08), two
- * bytes, UNSIGNED, LSB first, in units of 0.1 K.
+/* ===================================================================
+ * NOT AVAILABLE IN THIS BUILD
+ *
+ * The three fields below (addresses 25-32) are read and published only by
+ * application 3.7.0-rc5. They were added on 2026-11-05 to diagnose charge
+ * terminating early, which turned out to be a cell imbalance, and none of
+ * them is a functional need - nothing on the PIC ever consumed them.
+ *
+ * The DEFINITIONS stay so the addresses are reserved and nothing else claims
+ * 25-32, and so reviving the reads is a firmware change only. Every byte
+ * reads back as its "never written" sentinel below; a reader that honours
+ * those cannot mistake an unpublished field for a measurement.
+ *
+ * Full story: 2026-11-05_charge_fault_and_i2c_lockup.pdf at the repository
+ * root, and rc5 in git. RGS_PG_CurrentMonitor_rc5_diag.py displays all three.
+ * =================================================================== */
+
+/* Pack temperature, as SBS Temperature() (0x08) gives it: two bytes,
+ * UNSIGNED, LSB first, in units of 0.1 KELVIN - not 0.1 degC.
  *
  *      degrees C = value / 10 - 273.15      (2981 = 25.0 degC)
  *
- * Held in the gauge's own units rather than converted to 0.1 degC, and the
- * reason is the failure mode rather than laziness:
- *
- *   - ZERO IS A FREE SENTINEL. 0 K cannot happen, so zero here means "never
- *     read" or "the gauge did not answer". Converted to 0.1 degC, zero would
- *     mean 0.0 degC - which is exactly the UTC trip point - so a comms failure
- *     would read as a live under-temperature condition. Wrong direction for
- *     this field to fail in.
- *   - Unsigned the whole way through: no sign extension in the PIC, in the
- *     monitor, or in anything written against this later. A pack at -20 degC
- *     is 2531, still positive.
- *   - It is digit-for-digit what bqStudio shows, so a peek at these two bytes
- *     needs no offset remembered or mis-applied.
- *
- * WHY THIS FIELD EXISTS (2026-11-05). The golden image writes Temperature
- * Enable = 0x01 and Temperature Mode = 0x00 - TSint only, treated as the cell
- * temperature - so the gauge's own die is the SOLE temperature input. That one
- * reading picks the Advanced Charge Algorithm's voltage band:
- *
- *       0-12 degC    4000 mV/cell    16.00 V pack
- *      12-20 degC    4200 mV/cell    16.80 V pack
- *      20-25 degC    4100 mV/cell    16.40 V pack
- *      25-30 degC    4200 mV/cell    16.80 V pack
- *      30-55 degC    4000 mV/cell    16.00 V pack
- *
- * and it also gates OTC (45 degC, recovery 40) and UTC (0 degC, recovery 5),
- * either of which OPENS THE CHARGE FET. Charge observed terminating at 15.8 V
- * is a 4000 mV/cell band, so the die is outside 20-25 degC - but nothing in
- * this map could say which way it had gone, or how near a trip it was sitting.
- * Hence these two bytes.
- *
- * Purely additive, so TableVersion does NOT move - see InitEEpromVals.c.
+ * SENTINEL IS ZERO, and that is the one thing here worth not re-deriving:
+ * 0 K cannot occur, so zero is free. Held as 0.1 degC instead, zero would be
+ * 0.0 degC - exactly the UTC trip point - so an unread field would read as a
+ * live under-temperature condition. Unsigned throughout, so a pack at
+ * -20 degC is 2531 and still positive.
  */
 #define BatteryTemperature_Addr ( StatusByteAddr + StatusByteNumBytes )
 #define BatteryTemperatureNumBytes 2
@@ -263,29 +253,13 @@ extern "C" {
 
 #define BatteryTemperatureNotRead 0u   /* 0 K is impossible: no reading yet */
 
-/* What the GAUGE IS ASKING THE CHARGER FOR: SBS ChargingVoltage() (0x15), two
- * bytes, UNSIGNED, LSB first, in mV. The pack total, not per cell - so 16800,
- * 16400 or 16000 for the three bands the temperature selects.
+/* What the gauge is ASKING THE CHARGER FOR: SBS ChargingVoltage() (0x15),
+ * two bytes, UNSIGNED, LSB first, in mV. Pack total, not per cell.
  *
- * This is the authoritative version of the question the temperature field only
- * lets you infer. The band table is read out of a data flash capture and
- * cannot be verified from here; this is the gauge's own answer. If the two ever
- * disagree, the pack's data flash is not the stock image.
- *
- * ZERO IS A REAL READING - the gauge refusing charge outright - so unlike the
- * temperature beside it, zero CANNOT be the "never read" sentinel here. That
- * matters precisely because a refusal is the interesting case: OTC or UTC
- * tripping, or any other protection opening the charge FET, shows up as a
- * request for 0 mV, and a reader must be able to tell that from a field that
- * was never written.
- *
- * 0xFFFF is the sentinel instead. 65535 mV is impossible for a 4S pack whose
- * highest target is 16800, and it is also what an erased or unprovisioned
- * PERSIST block restores as - so the sentinel and the "never written" state
- * agree rather than contradicting each other. The two adjacent fields using
- * opposite sentinels is deliberate, and this is why.
- *
- * Purely additive, so TableVersion does NOT move - see InitEEpromVals.c.
+ * SENTINEL IS 0xFFFF, NOT zero, and the asymmetry with the temperature field
+ * above is deliberate: 0 mV is a REAL reading here - the gauge refusing
+ * charge outright, which is the case most worth seeing - so it cannot double
+ * as "never written". 65535 mV is impossible for a 4S pack.
  */
 #define ChargingVoltage_Addr ( BatteryTemperature_Addr + BatteryTemperatureNumBytes )
 #define ChargingVoltageNumBytes 2
@@ -296,40 +270,22 @@ extern "C" {
 
 #define ChargingVoltageNotRead 0xFFFFu  /* 0 mV is a REAL reading: refusing charge */
 
-/* The gauge's OperationStatus, from ManufacturerBlockAccess subcommand 0x0054.
- * Four bytes, LSB first, exactly as the gauge returns them.
+/* The gauge's OperationStatus, from ManufacturerBlockAccess subcommand
+ * 0x0054. Four bytes, LSB first, exactly as the gauge returns them. The only
+ * reading in the system that states the FET positions as fact rather than
+ * letting them be inferred - bit 2 is the charge FET.
  *
- * This is the only place in the system that reports the FET states as FACT.
- * Everything else infers them: a charging voltage of 0 says the gauge is
- * declining charge, and a pack current of nearly nothing says charge is not
- * flowing, but neither says whether the charge FET is actually open. Bit 2
- * does.
+ * Bit meanings are TI's and are defined ONCE, as BQ_OP_* in bq40z50.h, not
+ * mirrored here: this header is machine-translated into the Python map for
+ * the Jetson tools, and a second copy of a register layout is a second thing
+ * to keep right.
  *
- * Bit meanings are TI's and are defined ONCE, in bq40z50.h, as BQ_OP_*. They
- * are deliberately NOT mirrored here: this header is machine-translated into
- * the Python map for the Jetson tools, and a second copy of a register layout
- * is a second thing to keep right. The ones that matter for the charge path:
+ * Four bytes rather than two because CB and EMSHUT live at bits 28 and 29.
  *
- *      bit  1  BQ_OP_DSG      discharge FET is ON
- *      bit  2  BQ_OP_CHG      charge FET is ON          <-- the question
- *      bit 13  BQ_OP_XDSG     discharging disabled
- *      bit 14  BQ_OP_XCHG     charging disabled
- *      bit 28  BQ_OP_CB       cell balancing active
- *      bit 29  BQ_OP_EMSHUT   emergency FET shutdown
- *
- * All four bytes are published rather than just the low two, because CB and
- * EMSHUT live at bits 28 and 29. Cell balancing matters here: it only runs at
- * RSOC 80% or above, so a pack that terminates charge early may never balance,
- * and bit 28 is the only way to see whether it ever does.
- *
- * SENTINEL IS 0xFFFFFFFF, and for the same reason the charging voltage above
- * does not use zero: all-bits-zero is a perfectly meaningful OperationStatus -
- * both FETs open, nothing enabled - and an alarming one, so it must not double
- * as "never read". All-bits-one cannot occur, since most of the 32 bits are
- * reserved and read back zero. It is also what an erased PERSIST block
- * restores as, so the sentinel and the never-written state agree.
- *
- * Purely additive, so TableVersion does NOT move - see InitEEpromVals.c.
+ * SENTINEL IS 0xFFFFFFFF, for the same reason the charging voltage does not
+ * use zero: all-bits-zero is a real and alarming status - both FETs open -
+ * so it must not mean "never written". All-ones cannot occur, as most of the
+ * 32 bits are reserved and read back zero.
  */
 #define OperationStatus_Addr ( ChargingVoltage_Addr + ChargingVoltageNumBytes )
 #define OperationStatusNumBytes 4
