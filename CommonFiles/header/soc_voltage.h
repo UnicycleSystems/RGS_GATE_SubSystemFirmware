@@ -81,7 +81,53 @@
  * Min Cell V floor of 2800, and a whole volt above CUV at 2300. There is a
  * great deal of unused pack below this point; stopping here is a choice about
  * reserve, not a safety limit. */
-#define SOCV_SHUTDOWN_MV        13300u  /* force a graceful power-down */
+#define SOCV_SHUTDOWN_MEASURED_MV   13300u  /* proven, from the 11-02 log */
+
+/* ---- TEST OVERRIDE for the hard limit.  0 IN ANY RELEASED BUILD. ----
+ *
+ * Millivolts to stop at INSTEAD of the measured value above, or 0 to use the
+ * measured one. The comment block above describes 13300; with this set the
+ * unit stops at this figure instead and those paragraphs describe only where
+ * the number came from.
+ *
+ * WHY IT IS AN OVERRIDE RATHER THAN AN EDIT. 13300 is not a preference, it is
+ * a measurement - the 2026-11-02 log caught the unit powering off at
+ * 13311 mV. Editing it in place would destroy the one number in this file
+ * that was observed rather than chosen, and nothing would remember that it
+ * had been. So the measurement stays and the test value sits beside it.
+ *
+ * WHAT IT COSTS, and this is the part worth reading. The lookup table bottoms
+ * out at 13500 mV = 0% and SOCV_MIN_REPORTED_PCT floors the indicator at 1%,
+ * so everything below 13500 already reports 1%. Push the stop down to, say,
+ * 11500 and the pack reports 1% across a full two volts of range, while
+ * LowBatteryWarning, LowBatteryCritical and PowerOff_10_min all latch from
+ * about 13.8 V and then simply sit there until PowerOff_1_min finally fires.
+ * The warning LADDER stops conveying anything; only the last step still does.
+ *
+ * And the average stops being the limit. At 11500 the pack is 2875 mV/cell
+ * averaged - but this pack's Cell 2 has been the capacity-limiting cell at
+ * every reading across both characterisation cycles, so it will be well below
+ * that, plausibly near the gauge's own CUV threshold of 2300 mV. The gauge
+ * would then open the discharge FET itself, which is a harder stop than the
+ * graceful one this threshold exists to produce. A low override may therefore
+ * never actually be reached.
+ *
+ *      0      use SOCV_SHUTDOWN_MEASURED_MV          <-- released builds
+ *      11500  bench: run depleted packs further down
+ *
+ * A non-zero value raises a compiler #warning on every build, deliberately.
+ */
+#define SOCV_SHUTDOWN_OVERRIDE_MV   11500u
+
+#if SOCV_SHUTDOWN_OVERRIDE_MV
+#warning "SOCV_SHUTDOWN_OVERRIDE_MV is SET: TEST BUILD, moves the power-off point"
+#if (SOCV_SHUTDOWN_OVERRIDE_MV < 10000) || (SOCV_SHUTDOWN_OVERRIDE_MV > 13500)
+#error "SOCV_SHUTDOWN_OVERRIDE_MV outside 10000-13500 mV (pack total, not per cell)"
+#endif
+#define SOCV_SHUTDOWN_MV        SOCV_SHUTDOWN_OVERRIDE_MV
+#else
+#define SOCV_SHUTDOWN_MV        SOCV_SHUTDOWN_MEASURED_MV
+#endif
 
 /* Warnings, on indicated percentage. All three land inside the MEASURED part
  * of the curve, and all three trip at 13826 / 13662 / 13551 mV respectively.

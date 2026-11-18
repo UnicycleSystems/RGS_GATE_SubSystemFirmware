@@ -53,6 +53,44 @@
 #include "../CommonFiles/header/bq40z50.h"
 #include "../CommonFiles/header/soc_voltage.h"
 
+/* ===================================================================
+ * TEST KNOB - PRECHARGE OVERRIDE.  MUST BE 0 IN ANY RELEASED BUILD.
+ *
+ * Per-cell millivolts to write into the gauge's Precharge Start Voltage at
+ * boot, or 0 to leave the pack alone and compile all of this out.
+ *
+ * WHAT IT DOES. Below this threshold the gauge abandons the main charge FET
+ * and trickles through the precharge FET instead - which is the "charger in,
+ * zero current, CHG FET open" picture. Setting it below the weakest cell makes
+ * the gauge bulk-charge a cell it had decided to protect.
+ *
+ * Which is the point, and also the hazard: bulk current into a deeply
+ * discharged cell is exactly what the stock 2500 mV exists to prevent. This
+ * pack's weak cell is CELL 2, recorded as the capacity-limiting cell at every
+ * reading across both characterisation cycles - see
+ * bq40z50r2_goldenimages/GaugeCharacterisation/LEARNING_CYCLE.md.
+ *
+ *      0     feature compiled out entirely          <-- released builds
+ *      2500  stock value, so a build with this set RESTORES a pack
+ *      2000  override: trickle only below 2.0 V per cell
+ *
+ * The write is PERSISTENT in the pack's data flash and is NOT a bq_golden[]
+ * entry, so applying the golden image will not undo it. Restore it by
+ * building with 2500 and booting once.
+ *
+ * A non-zero value raises a compiler #warning on every build, deliberately -
+ * this is not something to discover in the field.
+ * =================================================================== */
+#define PRECHARGE_OVERRIDE_MV   0
+
+#if PRECHARGE_OVERRIDE_MV
+#warning "PRECHARGE_OVERRIDE_MV is SET: TEST BUILD, overrides a pack protection"
+#if (PRECHARGE_OVERRIDE_MV < 1500) || (PRECHARGE_OVERRIDE_MV > 3500)
+#error "PRECHARGE_OVERRIDE_MV outside 1500-3500 - it is PER CELL, in mV"
+#endif
+#endif
+
+
 
 //accelerometer specific stuff....
 // to be removed if we ever implement a proper .c/.h set up
@@ -534,6 +572,20 @@ int main(void)
             (void)BQ40Z50_EnableFETs(NULL);
             (void)BQ40Z50_EnsureFETPersist(NULL);
         }
+
+#if PRECHARGE_OVERRIDE_MV
+        /* Bench override - see PRECHARGE_OVERRIDE_MV at the top of this file.
+         *
+         * Every boot, not only cold ones, and deliberately: the call reads the
+         * pack first and writes only on a difference, so a boot that finds the
+         * value already set costs one data flash read and no write. Running it
+         * on a warm boot too means a firmware update applies it without
+         * needing a power cycle, which is what makes it usable on the bench.
+         *
+         * Result ignored - this build has no console. The effect is visible
+         * from the Jetson as charge current appearing where there was none. */
+        (void)BQ40Z50_SetPrechargeStartMV(PRECHARGE_OVERRIDE_MV, NULL);
+#endif
     }
   //  uint8_t id = 0x00;
 

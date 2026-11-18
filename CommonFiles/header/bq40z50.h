@@ -544,6 +544,24 @@ BQ_STATUS   BQ40Z50_Unseal(void);
 BQ_STATUS   BQ40Z50_EnsureDAConfig(uint8_t *da_config_out);
 BQ_STATUS   BQ40Z50_EnableFETs(uint32_t *op_status_out);
 BQ_STATUS   BQ40Z50_EnsureFETPersist(uint16_t *mfg_init_out);
+
+/* Set Precharge Start Voltage - the PER-CELL threshold, in mV, below which the
+ * gauge stops using the main charge FET and trickles through the precharge FET
+ * instead. Stock is 2500 mV.
+ *
+ * Lowering it below the weakest cell takes the gauge OUT of precharge and back
+ * to bulk charging. That is a deliberate override of a protective decision:
+ * the gauge chose the trickle because a cell is deeply discharged, and bulk
+ * current into such a cell is the condition this threshold exists to prevent.
+ * For bench experiments only - see PRECHARGE_OVERRIDE_MV in PuttingGate's
+ * main.c, which is the only caller and is compiled out by default.
+ *
+ * Idempotent: reads first and writes only on a difference, so passing the
+ * stock 2500 restores it and passing the current value costs one read. Needs
+ * full access (SEC = 01); the packs in use are left unsealed. `actual` returns
+ * the value in the pack afterwards, or the value found if no write was needed.
+ */
+BQ_STATUS   BQ40Z50_SetPrechargeStartMV(uint16_t mv, uint16_t *actual);
 BQ_STATUS   BQ40Z50_EnsureTempConfigBench(void);
 BQ_STATUS   BQ40Z50_ReadCellVoltages(uint16_t mv[4]);
 BQ_STATUS   BQ40Z50_ReadMAC32(uint16_t subcmd, uint32_t *value);

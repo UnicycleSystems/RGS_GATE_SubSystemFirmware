@@ -760,6 +760,35 @@ BQ_STATUS BQ40Z50_EnsureFETPersist(uint16_t *mfg_init_out)
     return BQ_OK;
 }
 
+/* Precharge Start Voltage. Same shape as EnsureFETPersist() above: read,
+ * write only on a difference, read back and verify. See the header for why
+ * this is a bench-only override rather than a configuration setting, and note
+ * it is deliberately NOT a bq_golden[] entry - applying the golden image will
+ * not restore it, so whatever is written here persists in the pack until
+ * something writes it back. */
+BQ_STATUS BQ40Z50_SetPrechargeStartMV(uint16_t mv, uint16_t *actual)
+{
+    uint16_t now, readback;
+    BQ_STATUS st = bq_df_read_word(BQ_DF_PRECHARGE_START_MV, &now);
+
+    if (st != BQ_OK)
+        return st;
+    if (actual != NULL)
+        *actual = now;
+    if (now == mv)
+        return BQ_OK;                   /* already there - no flash wear */
+
+    st = bq_df_write_word(BQ_DF_PRECHARGE_START_MV, mv);
+    if (st != BQ_OK)
+        return st;
+    st = bq_df_read_word(BQ_DF_PRECHARGE_START_MV, &readback);
+    if (st != BQ_OK)
+        return st;
+    if (actual != NULL)
+        *actual = readback;
+    return (readback == mv) ? BQ_OK : BQ_ERR_DF_VERIFY;
+}
+
 BQ_STATUS BQ40Z50_ReadCellVoltages(uint16_t mv[4])
 {
     static const uint8_t cmds[4] = { BQ_CMD_CELL_VOLTAGE_1, BQ_CMD_CELL_VOLTAGE_2,
